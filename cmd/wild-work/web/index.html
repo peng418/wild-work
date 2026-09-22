@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>wild-work 管理面板</title>
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- 顶部 -->
+  <header class="topbar">
+    <div class="brand">
+      <img class="logo" src="./logo64.png" alt="logo" onerror="this.style.display='none'">
+      <div class="brand-text">
+        <div class="title">wild-work <span class="ver" id="ver"></span></div>
+        <div class="sub" id="serverLine"></div>
+      </div>
+    </div>
+    <div class="top-info">
+      <div class="info-cell">
+        <span class="info-label">OpenAI接口</span>
+        <code class="info-value" id="apiAddr" title="点击复制地址"><span class="val"></span></code>
+        <span class="icon-edit" title="修改">✎</span>
+      </div>
+      <div class="info-cell">
+        <span class="info-label">API-Key</span>
+        <code class="info-value" id="apiKeyDisplay" title="点击复制密钥"><span class="val"></span></code>
+        <span class="icon-edit" title="修改">✎</span>
+      </div>
+    </div>
+    <div class="top-icons">
+      <span class="icon-link" id="btnHelp" title="帮助">?</span>
+      <span class="icon-link" id="btnAbout" title="关于">i</span>
+    </div>
+  </header>
+
+  <!-- 账号管理 -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>账号管理</h2>
+      <div class="panel-actions-wrap">
+        <!-- 左组：刷新积分/全部签到，整体靠左 -->
+        <div class="pa-group pa-left">
+          <button class="btn primary" id="btnRefreshAll">刷新积分</button>
+          <button class="btn" id="btnCheckinAll">全部签到</button>
+        </div>
+        <!-- 中间弹性空白由 flex:1 撑开 -->
+        <div class="pa-spacer"></div>
+        <!-- 右组：渠道添加三列 grid，整体靠右；末列留白 -->
+        <!-- 布局：行1 = WorkBuddyCN | QoderCN | TraeWork；行2 = WorkBuddyAI | QoderCOM | 千问办公；旧 Qoder 渠道已下线（代码保留，仅删界面入口） -->
+        <div class="pa-group pa-right">
+          <button class="btn primary" id="btnAddWB" style="grid-column:1;grid-row:1">＋ WorkBuddyCN</button>
+          <button class="btn primary alt qodercn" id="btnAddQoderCN" style="grid-column:2;grid-row:1">＋ QoderCN</button>
+          <button class="btn primary alt" id="btnAddTrae" style="grid-column:3;grid-row:1">＋ TraeWork</button>
+          <button class="btn primary alt wbai" id="btnAddWBAI" style="grid-column:1;grid-row:2">＋ WorkBuddyAI</button>
+          <button class="btn primary alt qodercom" id="btnAddQoderCOM" style="grid-column:2;grid-row:2">＋ QoderCOM</button>
+          <button class="btn primary alt qwenwork" id="btnAddQwen" style="grid-column:3;grid-row:2">＋ 千问办公</button>
+        </div>
+      </div>
+    </div>
+    <div id="acctList" class="acct-grid"></div>
+    <div id="acctEmpty" class="empty hidden">还没有账号，点击上方按钮添加</div>
+  </section>
+
+  <!-- 自动签到 + 开机自启 -->
+  <section class="panel">
+    <div class="panel-head"><h2>自动签到</h2></div>
+    <div class="config-grid">
+      <div class="config-left">
+        <div class="row wrap">
+          <div id="timesBox" class="times"></div>
+          <button class="icon-btn" id="btnAddTime" title="增加一个签到时间">＋</button>
+        </div>
+        <div class="hint">保活 22:00 自动 · 下次 <span id="nextCheckin">-</span></div>
+      </div>
+      <div class="config-right">
+        <div class="row">
+          <span>开机自启</span>
+          <label class="switch"><input type="checkbox" id="chkAutostart"><span class="slider"></span></label>
+        </div>
+        <div class="hint">程序随系统启动自动运行</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 模型列表和费率 -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>模型列表和费率</h2>
+      <button class="btn small" id="btnRefreshFees">刷新</button>
+    </div>
+    <div id="feesBox" class="fees"></div>
+  </section>
+
+  <div class="footer">wild-work — 多渠道账号聚合 · 仅供个人学习 · 右键托盘图标退出</div>
+</div>
+
+<!-- 添加账号确认弹层 -->
+<div class="overlay hidden" id="loginConfirmOverlay">
+  <div class="modal">
+    <div class="modal-title" id="lcTitle">添加账号</div>
+    <div class="modal-body">
+      <p id="lcMsg">点击下方按钮将打开浏览器窗口，请按照指示正常登录，登录成功后关闭浏览器窗口即可。</p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn small" id="btnLoginConfirmCancel">取消</button>
+      <button class="btn small primary" id="btnLoginConfirm">登录</button>
+    </div>
+  </div>
+</div>
+
+<!-- 添加账号弹层 -->
+<div class="overlay hidden" id="loginOverlay">
+  <div class="modal">
+    <div class="modal-title" id="loginTitle">添加账号</div>
+    <div class="modal-body">
+      <div id="loginMsg">请在浏览器新窗口中完成登录…</div>
+      <div class="login-buttons">
+        <button class="btn small" id="btnCopyUrl">复制链接</button>
+        <button class="btn small danger" id="btnCancelLogin">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 确认弹层 -->
+<div class="overlay hidden" id="confirmOverlay">
+  <div class="modal">
+    <div class="modal-title">确认操作</div>
+    <div class="modal-body" id="confirmMsg">确定执行该操作？</div>
+    <div class="modal-actions">
+      <button class="btn small" id="btnConfirmCancel">取消</button>
+      <button class="btn small danger" id="btnConfirmOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- API 配置弹层 -->
+<div class="overlay hidden" id="apiConfigOverlay">
+  <div class="modal">
+    <div class="modal-title">API 配置</div>
+    <div class="modal-body">
+      <div class="row">
+        <label class="lbl">监听</label>
+        <select id="selHost" class="select">
+          <option value="127.0.0.1">127.0.0.1（本机）</option>
+          <option value="0.0.0.0">0.0.0.0（全部）</option>
+          <option value="__custom__">自定义…</option>
+        </select>
+        <span class="muted">:</span>
+        <input id="inPort" class="input port" type="number" min="1" max="65535">
+      </div>
+      <div id="customHostRow" class="row hidden"><input id="inHost" class="input grow" placeholder="如 192.0.2.10" spellcheck="false"></div>
+      <div class="risk-tip">⚠️ 监听 0.0.0.0 时，局域网内任何设备都可访问本 API 与账号管理，风险请自行评估。</div>
+      <hr>
+      <div class="row" style="margin-top:8px"><label class="lbl">默认渠道</label>
+        <select id="selCh" class="select"></select>
+      </div>
+      <div class="row"><label class="lbl">封顶 tokens</label>
+        <input id="inMaxTok" class="input port" type="number" min="0" step="1000">
+        <span class="hint" style="margin-left:6px">0=不限制</span>
+      </div>
+      <div class="row" style="align-items:center">
+        <label class="lbl">映射表</label>
+        <span class="btn small" id="btnCompatMap">编辑</span>
+        <span class="hint" id="mapSummary" style="margin-left:6px"></span>
+      </div>
+      <div id="mapEditor" class="map-editor hidden">
+        <div class="hint" style="margin-bottom:4px">一行一条，格式：<code>客户端模型名 = 渠道/模型名</code>；支持通配 <code>claude-* = workbuddy/glm-5.2</code>；以 # 开头为注释。</div>
+        <textarea id="mapText" class="input map-text" spellcheck="false" rows="6"></textarea>
+        <div class="hint" style="margin-top:5px">
+          缺省建议（点击插入）：<span id="mapPresets"></span>
+        </div>
+        <div class="hint" id="mapErr" style="color:var(--danger);margin-top:4px"></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn small" id="btnApiCancel">取消</button>
+      <button class="btn small primary" id="btnApiSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- API Key 弹层 -->
+<div class="overlay hidden" id="apiKeyOverlay">
+  <div class="modal">
+    <div class="modal-title">修改 API-Key</div>
+    <div class="modal-body">
+      <input id="keyInput" class="input grow" style="width:100%" spellcheck="false" placeholder="留空 = 不鉴权">
+    </div>
+    <div class="modal-actions">
+      <button class="btn small" id="btnKeyCancel">取消</button>
+      <button class="btn small primary" id="btnKeySave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 帮助弹层 -->
+<div class="overlay hidden" id="helpOverlay">
+  <div class="modal" style="max-width:540px">
+    <div class="modal-title">配置说明</div>
+    <div class="modal-body docs">
+      <p>1. 添加账号后自动完成登录（WorkBuddy 国际版无需手动签到，定时自动领取日活奖励；Qoder 渠道无签到活动，仅 API 转发）。</p>
+      <p>2. AI 客户端配置：Base URL <code>http://127.0.0.1:7863/v1</code>，API Key 见页面顶部。</p>
+      <p>3. 支持三种接口协议：<br>
+        · OpenAI Chat：<code>POST /v1/chat/completions</code>（旧版客户端）<br>
+        · OpenAI Responses：<code>POST /v1/responses</code>（codex CLI）<br>
+        · Anthropic Messages：<code>POST /v1/messages</code>（claude CLI，Base URL 不带 <code>/v1</code>）<br>
+        Anthropic 客户端用 <code>x-api-key</code> 或 <code>Authorization: Bearer</code> 均可。</p>
+      <p>4. 模型 ID 建议带渠道前缀：<code>workbuddy/&lt;model&gt;</code>、<code>workbuddyai/&lt;model&gt;</code>、<code>traework/&lt;model&gt;</code>、<code>qoder/&lt;model&gt;</code>；
+        也支持裸名（走 <code>config.json</code> 的 <code>compat.default_channel</code> / <code>model_map</code>）。</p>
+      <p>5. 积分会随聊天消耗实时变化，"全部刷新积分"可即时获取最新余额。</p>
+      <p>6. 日志文件位于 exe 目录下 <code>data/app.log</code>，可从托盘菜单"查看日志"打开。</p>
+      <p>7. 退出程序：右键托盘图标选择"退出"。</p>
+      <p>8. 本工具仅供个人学习使用，请遵守各上游平台服务条款。</p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn small primary" id="btnHelpClose">知道了</button>
+    </div>
+  </div>
+</div>
+
+<!-- 关于弹层 -->
+<div class="overlay hidden" id="aboutOverlay">
+  <div class="modal" style="text-align:center">
+    <img class="logo" src="./logo64.png" alt="logo" style="width:64px;height:64px;margin-bottom:12px">
+    <div class="modal-title">wild-work</div>
+    <div class="modal-body" style="color:var(--muted)">
+      <p>版本 <span id="aboutVer"></span></p>
+      <p>多渠道账号聚合工具</p>
+      <p>基于 WorkBuddy + TraeWork + Qoder 上游</p>
+      <p style="margin-top:8px;font-size:12px">仅供个人学习使用</p>
+    </div>
+    <div class="modal-actions" style="justify-content:center">
+      <button class="btn small primary" id="btnAboutClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="./app.js"></script>
+</body>
+</html>

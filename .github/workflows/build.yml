@@ -1,0 +1,156 @@
+name: Build Release
+
+on:
+  # 手动触发：Actions 页面选 dev 分支 → Run workflow → 构建 + 发布 dev pre-release
+  workflow_dispatch:
+  # 推送 tag（v*）自动触发正式发版
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - name: windows-amd64
+            os: ubuntu-latest
+            goos: windows
+            goarch: amd64
+            cgo: "0"
+            ldflags: "-H windowsgui"
+            needs_rsrc: true
+            suffix: .exe
+          - name: macos-arm64
+            os: macos-latest
+            goos: darwin
+            goarch: arm64
+            cgo: "1"
+            suffix: ""
+            pack_app: true
+          - name: macos-amd64
+            os: macos-latest
+            goos: darwin
+            goarch: amd64
+            cgo: "1"
+            suffix: ""
+            pack_app: true
+          - name: linux-amd64
+            os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            cgo: "0"
+            suffix: ""
+          - name: linux-arm64
+            os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            cgo: "0"
+            suffix: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      # workflow_dispatch 手动触发按钮只在默认分支（master）显示，但构建目标始终是 dev；
+      # tag 触发（push v*）则构建对应 tag 的代码
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'push' && github.ref || 'master' }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Generate icon resource (rsrc)
+        if: matrix.needs_rsrc
+        run: |
+          go install github.com/akavel/rsrc@latest
+          cp build/windows/icon.ico cmd/wild-work/icon.ico
+          rsrc -ico cmd/wild-work/icon.ico -o cmd/wild-work/rsrc_windows_amd64.syso
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: ${{ matrix.cgo }}
+        run: |
+          OUT="dist/wild-work-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}"
+          go build -ldflags "${{ matrix.ldflags }}" -o "$OUT" ./cmd/wild-work
+
+      # macOS：把二进制打成可双击的 .app 并生成 .dmg（脚本见 build/macos/build-app.sh）。
+      # ARCH 必须显式传：runner 架构（arm64）与目标架构（可能 amd64）未必一致。
+      # REQUIRE_DMG=1 → dmg 生成失败即让 job 失败，避免发出不含 dmg 的 release。
+      - name: Package macOS .app + .dmg
+        if: matrix.pack_app
+        env:
+          ARCH: ${{ matrix.goarch }}
+          REQUIRE_DMG: "1"
+        run: bash build/macos/build-app.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/wild-work-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
+
+      # dmg 单独作为 artifact 上传。release job 会 find 平铺 artifacts/ 下所有文件，
+      # 因此这里不需要改 release 逻辑，dmg 会自动进入 release 资产。
+      # 版本号来自 internal/app/app.go 的 Version 常量，workflow 里拿不到，故用通配符；
+      # 带 goarch 限定，确保只匹配本矩阵项自己那个架构的 dmg。
+      - name: Upload macOS .dmg
+        if: matrix.pack_app
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}-dmg
+          path: dist/WildWork-*-${{ matrix.goarch }}.dmg
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # tag 触发（push v*）→ 检出该 tag 代码；手动触发 → 检出 dev 分支代码
+          ref: ${{ github.event_name == 'push' && github.ref || 'master' }}
+
+      # 注意顺序：先 checkout 再 download-artifact，否则 git 检出会覆盖 artifacts/
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          # 默认 merge-multiple=false：每个 artifact 下载到 artifacts/<name>/ 子目录
+
+      - name: Create or update dev release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 收集产物（每个 artifact 一个子目录，find 平铺）
+          mkdir -p release-assets
+          find artifacts -type f -exec cp {} release-assets/ \;
+          echo "=== release-assets 内容 ==="
+          ls -la release-assets/
+
+          # tag 触发 → 创建新正式 release（不会碰其他分支的 release）
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            # release note 用仓库里的 RELEASE-<tag>.md（手写摘要），而非 --generate-notes
+            # （后者只给 commit 链接列表，没有面向用户的变更摘要）；
+            # 找不到该文件时回退到 --generate-notes，不阻塞发版。
+            NOTES="RELEASE-${TAG}.md"
+            if [[ -f "$NOTES" ]]; then
+              echo "=== 使用 $NOTES 作为 release note ==="
+              gh release create "$TAG" release-assets/* --title "$TAG" --notes-file "$NOTES"
+            else
+              echo "=== 未找到 $NOTES，回退到自动生成 notes ==="
+              gh release create "$TAG" release-assets/* --generate-notes
+            fi
+            exit 0
+          fi
+          # workflow_dispatch → 每次更新同一个 dev-build 专属 release
+          # 复用固定 tag，避免堆积；不会删除 master 分支的任何发布包
+          DEV_TAG="dev-build"
+          if gh release view "$DEV_TAG" >/dev/null 2>&1; then
+            gh release delete "$DEV_TAG" --yes --cleanup-tag
+          fi
+          gh release create "$DEV_TAG" release-assets/* --prerelease \
+            --title "Dev Build $(date '+%Y-%m-%d %H:%M')" \
+            --notes "Dev 分支自动构建（commit ${{ github.sha }}）"

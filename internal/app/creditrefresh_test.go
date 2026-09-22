@@ -1,0 +1,430 @@
+package app
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"path/filepath"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"wild-work/internal/auth"
+	"wild-work/internal/config"
+	"wild-work/internal/pool"
+	"wild-work/internal/provider"
+)
+
+// fakeUpstream 只实现 UserResource / RefreshToken，其余为空实现。
+type fakeUpstream struct {
+	resourceCalls atomic.Int32
+	remain        int64
+	failResource  atomic.Bool
+	// sessionDead 为 true 时 UserResourceDetail 先报一次 401（模拟本地 token 已失效），
+	// 刷新后恢复——用于验证「401 自愈」。
+	sessionDead  atomic.Bool
+	refreshCalls atomic.Int32
+}
+
+func (f *fakeUpstream) RefreshToken(a *auth.Auth) error {
+	f.refreshCalls.Add(1)
+	f.sessionDead.Store(false) // 刷新即恢复
+	return nil
+}
+
+func (f *fakeUpstream) ChatStream(a *auth.Auth, body []byte) (io.ReadCloser, int, []byte, error) {
+	return nil, 200, nil, nil
+}
+
+func (f *fakeUpstream) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) { return nil, nil }
+
+func (f *fakeUpstream) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error) {
+	return nil, nil
+}
+
+func (f *fakeUpstream) UserResource(a *auth.Auth) (int64, error) {
+	f.resourceCalls.Add(1)
+	if f.failResource.Load() {
+		return 0, io.ErrUnexpectedEOF
+	}
+	return f.remain, nil
+}
+
+// UserResourceDetail 与 UserResource 同源：remain 即可用余额，unusable 固定 0。
+// 计入 resourceCalls，因为生产代码的刷新路径只走 Detail（不再调 UserResource）。
+func (f *fakeUpstream) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceItem, error) {
+	f.resourceCalls.Add(1)
+	if f.sessionDead.Load() {
+		return 0, nil, &provider.Error{Kind: provider.ErrSessionDead, Status: 401, Msg: "token invalid"}
+	}
+	if f.failResource.Load() {
+		return 0, nil, io.ErrUnexpectedEOF
+	}
+	return f.remain, []provider.ResourceItem{{Name: "套餐", Remain: f.remain, Usable: true}}, nil
+}
+
+func (f *fakeUpstream) DailyCheckin(a *auth.Auth) error { return nil }
+
+func (f *fakeUpstream) Classify(status int, body string) provider.ErrKind {
+	return provider.ErrNone
+}
+
+func (f *fakeUpstream) Stream(w http.ResponseWriter, r io.Reader, model string) error { return nil }
+
+func (f *fakeUpstream) Aggregate(r io.Reader, model string) (map[string]any, error) { return nil, nil }
+
+// newTestApp 构造仅含单个渠道的最小 App。
+func newTestApp(t *testing.T, kind provider.Kind, up provider.Upstream, uid string) (*App, *pool.Pool) {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.StateFile = filepath.Join(dir, "state.json")
+	cfg.AuthDir = dir
+
+	p := pool.New(filepath.Join(dir, "state-"+kind.String()+".json"))
+	p.Add(&auth.Auth{Kind: kind.String(), UID: uid, AccessToken: "t", RefreshToken: "r", Domain: "www.workbuddy.ai"})
+
+	a, err := New(Options{
+		ConfigPath: filepath.Join(dir, "config.json"),
+		Config:     cfg,
+		Runtimes: map[provider.Kind]*Runtime{
+			kind: {Kind: kind, Pool: p, Upstream: up},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(a.Close)
+	return a, p
+}
+
+// TestCreditAutoRefreshRunsImmediatelyAndPeriodically 启动即刷一次，之后按间隔重复。
+func TestCreditAutoRefreshRunsImmediatelyAndPeriodically(t *testing.T) {
+	up := &fakeUpstream{remain: 347}
+	a, p := newTestApp(t, provider.WorkBuddyAI, up, "uid-1")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a.StartCreditAutoRefresh(ctx, []provider.Kind{provider.WorkBuddyAI}, 120*time.Millisecond)
+
+	// 启动即刷：等待首次写入
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if st, ok := p.Status("uid-1"); ok && st.Credits == 347 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if st, _ := p.Status("uid-1"); st.Credits != 347 {
+		t.Fatalf("启动未自动刷新积分，credits=%d", st.Credits)
+	}
+
+	// 周期性：等待至少再来一次
+	first := up.resourceCalls.Load()
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if up.resourceCalls.Load() > first {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if up.resourceCalls.Load() <= first {
+		t.Fatalf("未按间隔重复刷新（calls=%d）", up.resourceCalls.Load())
+	}
+}
+
+// TestCreditAutoRefreshScopedToKinds 未传入的渠道不应被刷新（保护国内版行为）。
+func TestCreditAutoRefreshScopedToKinds(t *testing.T) {
+	wba := &fakeUpstream{remain: 100}
+	wb := &fakeUpstream{remain: 999}
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.StateFile = filepath.Join(dir, "state.json")
+	cfg.AuthDir = dir
+
+	pA := pool.New(filepath.Join(dir, "state-a.json"))
+	pA.Add(&auth.Auth{Kind: "workbuddyai", UID: "a", AccessToken: "t", RefreshToken: "r"})
+	pB := pool.New(filepath.Join(dir, "state-b.json"))
+	pB.Add(&auth.Auth{Kind: "workbuddy", UID: "b", AccessToken: "t", RefreshToken: "r"})
+
+	a, err := New(Options{
+		ConfigPath: filepath.Join(dir, "config.json"),
+		Config:     cfg,
+		Runtimes: map[provider.Kind]*Runtime{
+			provider.WorkBuddyAI: {Kind: provider.WorkBuddyAI, Pool: pA, Upstream: wba},
+			provider.WorkBuddy:   {Kind: provider.WorkBuddy, Pool: pB, Upstream: wb},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(a.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a.StartCreditAutoRefresh(ctx, []provider.Kind{provider.WorkBuddyAI}, 80*time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
+
+	if wba.resourceCalls.Load() == 0 {
+		t.Errorf("workbuddyai 应被刷新")
+	}
+	if n := wb.resourceCalls.Load(); n != 0 {
+		t.Errorf("workbuddy（国内版）不应被此循环刷新，却调用了 %d 次", n)
+	}
+	if st, _ := pB.Status("b"); st.Credits != 0 {
+		t.Errorf("国内版积分被改动：%d", st.Credits)
+	}
+}
+
+// TestCreditAutoRefreshSurvivesFailure 单账号失败不应中断循环。
+func TestCreditAutoRefreshSurvivesFailure(t *testing.T) {
+	up := &fakeUpstream{remain: 50}
+	up.failResource.Store(true)
+	a, p := newTestApp(t, provider.WorkBuddyAI, up, "uid-x")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a.StartCreditAutoRefresh(ctx, []provider.Kind{provider.WorkBuddyAI}, 60*time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
+
+	// 放开失败，循环应继续并在下个周期成功
+	up.failResource.Store(false)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if st, ok := p.Status("uid-x"); ok && st.Credits == 50 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("失败后未恢复刷新，calls=%d", up.resourceCalls.Load())
+}
+
+// TestCreditAutoRefreshCancels 取消 ctx 后应停止刷新。
+func TestCreditAutoRefreshCancels(t *testing.T) {
+	up := &fakeUpstream{remain: 10}
+	a, _ := newTestApp(t, provider.WorkBuddyAI, up, "uid-c")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	a.StartCreditAutoRefresh(ctx, []provider.Kind{provider.WorkBuddyAI}, 50*time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	time.Sleep(150 * time.Millisecond)
+
+	after := up.resourceCalls.Load()
+	time.Sleep(300 * time.Millisecond)
+	if up.resourceCalls.Load() != after {
+		t.Errorf("取消后仍在刷新：%d → %d", after, up.resourceCalls.Load())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 模型列表 ⊕ 费率 的合并逻辑
+// ---------------------------------------------------------------------------
+
+// TestBuildFeesChannels 以 models 列表为基准，逐行配费率；
+// 无对应费率条目的模型标记 Priced=false（前端显示 unknown）。
+func TestBuildFeesChannels(t *testing.T) {
+	models := map[provider.Kind][]provider.ModelInfo{
+		provider.WorkBuddyAI: {
+			{ID: "hy3", ContextWindow: 192000},                  // 有费率且免费
+			{ID: "glm-5.2", ContextWindow: 1000000},             // 有费率且付费
+			{ID: "deepseek-v4.1-flash", ContextWindow: 1000000}, // 硬编码，无费率
+		},
+	}
+	pricing := []provider.ModelPricing{
+		{Channel: "workbuddyai", Model: "hy3", Rate: 0, Note: "Free now"},
+		{Channel: "workbuddyai", Model: "glm-5.2", Rate: 0.79},
+		// 上游多返回一个 models 列表里没有的模型 → 不应出现在结果中
+		{Channel: "workbuddyai", Model: "ghost-model", Rate: 9.99},
+	}
+
+	got := buildFeesChannels(models, pricing, []provider.Kind{provider.WorkBuddyAI})
+	if len(got) != 1 {
+		t.Fatalf("want 1 channel, got %d", len(got))
+	}
+	rows := got[0].Models
+	if len(rows) != 3 {
+		t.Fatalf("want 3 rows (只按 models 列表), got %d: %+v", len(rows), rows)
+	}
+	byID := map[string]feesModelRow{}
+	for _, r := range rows {
+		byID[r.Model] = r
+	}
+	if r := byID["hy3"]; !r.Priced || !r.Free || r.Rate != 0 || r.Note != "Free now" {
+		t.Errorf("hy3 应为已定价且免费: %+v", r)
+	}
+	if r := byID["glm-5.2"]; !r.Priced || r.Free || r.Rate != 0.79 {
+		t.Errorf("glm-5.2 应为已定价付费: %+v", r)
+	}
+	if r := byID["deepseek-v4.1-flash"]; r.Priced {
+		t.Errorf("硬编码模型应标记为未定价（unknown）: %+v", r)
+	}
+	if _, ok := byID["ghost-model"]; ok {
+		t.Errorf("费率接口中多余、且不在 models 列表的模型不应展示")
+	}
+	// 排序：免费在前，付费次之，未定价置后
+	if rows[0].Model != "hy3" || rows[1].Model != "glm-5.2" || rows[2].Model != "deepseek-v4.1-flash" {
+		t.Errorf("排序应为 免费→付费→未定价，实得 %s,%s,%s", rows[0].Model, rows[1].Model, rows[2].Model)
+	}
+}
+
+// TestBuildFeesChannelsNoPricing 无费率数据时全部为 unknown，不应丢失模型。
+func TestBuildFeesChannelsNoPricing(t *testing.T) {
+	models := map[provider.Kind][]provider.ModelInfo{
+		provider.TraeWork: {{ID: "glm-5.2"}, {ID: "kimi-k2.7"}},
+	}
+	got := buildFeesChannels(models, nil, []provider.Kind{provider.TraeWork})
+	if len(got) != 1 || len(got[0].Models) != 2 {
+		t.Fatalf("模型不应因缺费率而消失: %+v", got)
+	}
+	for _, r := range got[0].Models {
+		if r.Priced {
+			t.Errorf("%s 应标记未定价", r.Model)
+		}
+	}
+}
+
+// TestBuildFeesChannelsAbsentCreditsIsNotFree CN 的 auto 调度器无 credits 字段：
+// 「缺失→0」不得被当作免费（应显示 unknown）。
+func TestBuildFeesChannelsAbsentCreditsIsNotFree(t *testing.T) {
+	explicitFalse := false
+	explicitTrue := true
+	models := map[provider.Kind][]provider.ModelInfo{
+		provider.WorkBuddy: {{ID: "auto"}, {ID: "hy4-preview"}, {ID: "glm-5.2"}},
+	}
+	pricing := []provider.ModelPricing{
+		{Channel: "workbuddy", Model: "auto", Rate: 0, Explicit: &explicitFalse},                         // 无 credits 字段
+		{Channel: "workbuddy", Model: "hy4-preview", Rate: 0, Note: "Free now", Explicit: &explicitTrue}, // 显式 x0.00
+		{Channel: "workbuddy", Model: "glm-5.2", Rate: 0.79, Explicit: &explicitTrue},
+	}
+	rows := buildFeesChannels(models, pricing, []provider.Kind{provider.WorkBuddy})[0].Models
+	byID := map[string]feesModelRow{}
+	for _, r := range rows {
+		byID[r.Model] = r
+	}
+	if r := byID["auto"]; r.Priced || r.Free {
+		t.Errorf("auto 无 credits 字段，应为 unknown（非免费）: %+v", r)
+	}
+	if r := byID["hy4-preview"]; !r.Priced || !r.Free {
+		t.Errorf("显式 x0.00 应标为免费: %+v", r)
+	}
+	if r := byID["glm-5.2"]; !r.Priced || r.Free {
+		t.Errorf("付费模型不应标免费: %+v", r)
+	}
+}
+
+// TestModelPricingIsExplicit 零值兼容：未设置 Explicit 视为显式（保持旧行为）。
+func TestModelPricingIsExplicit(t *testing.T) {
+	if !(provider.ModelPricing{Rate: 0}).IsExplicit() {
+		t.Error("未设置 Explicit 应视为显式（兼容旧缓存）")
+	}
+	f := false
+	if (provider.ModelPricing{Explicit: &f}).IsExplicit() {
+		t.Error("Explicit=false 应报告非显式")
+	}
+}
+
+// TestBuildFeesChannelsContextFlag 只有上游接口返回的上下文才带 has_context=true。
+func TestBuildFeesChannelsContextFlag(t *testing.T) {
+	models := map[provider.Kind][]provider.ModelInfo{
+		provider.WorkBuddyAI: {
+			{ID: "hy3", ContextWindow: 192000, MaxTokens: 64000, ContextFromAPI: true},
+			{ID: "deepseek-v4.1-flash", ContextWindow: 1000000, MaxTokens: 128000, ContextFromAPI: false},
+		},
+	}
+	rows := buildFeesChannels(models, nil, []provider.Kind{provider.WorkBuddyAI})[0].Models
+	byID := map[string]feesModelRow{}
+	for _, r := range rows {
+		byID[r.Model] = r
+	}
+	if r := byID["hy3"]; !r.HasContext || r.ContextWindow != 192000 {
+		t.Errorf("接口返回的上下文应标记 has_context: %+v", r)
+	}
+	if r := byID["deepseek-v4.1-flash"]; r.HasContext {
+		t.Errorf("硬编码估算的上下文不应标记 has_context: %+v", r)
+	}
+}
+
+// TestBuildFeesChannelsCarriesColor 促销标签颜色应透传到前端行。
+func TestBuildFeesChannelsCarriesColor(t *testing.T) {
+	explicitTrue := true
+	models := map[provider.Kind][]provider.ModelInfo{
+		provider.WorkBuddy: {{ID: "deepseek-v4.1-flash", ContextFromAPI: true, ContextWindow: 192000}},
+	}
+	pricing := []provider.ModelPricing{
+		{Channel: "workbuddy", Model: "deepseek-v4.1-flash", Rate: 0.03, Note: "独家优惠", Color: "#FF0000", Explicit: &explicitTrue},
+	}
+	rows := buildFeesChannels(models, pricing, []provider.Kind{provider.WorkBuddy})[0].Models
+	if len(rows) != 1 {
+		t.Fatalf("want 1 row, got %d", len(rows))
+	}
+	if rows[0].Note != "独家优惠" || rows[0].Color != "#FF0000" {
+		t.Errorf("颜色未正确透传: note=%q color=%q", rows[0].Note, rows[0].Color)
+	}
+}
+
+// TestCreditRefreshSelfHealsSessionDead 本地 token 已失效（上游 401）时，
+// 刷新路径必须自动 refresh + 重试，而不是把积分永久记成 0。
+// 背景：NeedsRefresh 只比本地 expiresAt，token 在别处被轮换或上次未落盘时
+// 本地仍显示有效 → 不重试就永久卡死（面板恒为 0、明细恒为空）。
+func TestCreditRefreshSelfHealsSessionDead(t *testing.T) {
+	up := &fakeUpstream{remain: 1828}
+	up.sessionDead.Store(true)
+	a, p := newTestApp(t, provider.TraeWork, up, "uid-dead")
+
+	// 先确保池里账号带 refresh token（否则不会尝试刷新）
+	if au := p.AuthByUID("uid-dead"); au != nil {
+		au.RefreshToken = "rt"
+	}
+
+	got, err := a.RefreshCredits("uid-dead")
+	if err != nil {
+		t.Fatalf("RefreshCredits 应自愈，却报错: %v", err)
+	}
+	if got != 1828 {
+		t.Errorf("remain=%d want 1828（刷新后应拿到真实余额）", got)
+	}
+	if up.refreshCalls.Load() == 0 {
+		t.Error("未尝试 refresh，说明 401 未被识别为 session dead")
+	}
+	if st, _ := p.Status("uid-dead"); st.Credits != 1828 {
+		t.Errorf("池内积分=%d want 1828", st.Credits)
+	}
+}
+
+// TestResourceDetailSelfHealsSessionDead 明细接口同样要能自愈，
+// 否则前端 hover 永远拿不到 items（tooltip 不显示）。
+func TestResourceDetailSelfHealsSessionDead(t *testing.T) {
+	up := &fakeUpstream{remain: 4400}
+	up.sessionDead.Store(true)
+	a, p := newTestApp(t, provider.TraeWork, up, "uid-tip")
+	if au := p.AuthByUID("uid-tip"); au != nil {
+		au.RefreshToken = "rt"
+	}
+
+	remain, items, err := a.ResourceDetail("uid-tip")
+	if err != nil {
+		t.Fatalf("ResourceDetail 应自愈，却报错: %v", err)
+	}
+	if remain != 4400 || len(items) == 0 {
+		t.Errorf("remain=%d items=%d，刷新后应拿到真实明细", remain, len(items))
+	}
+}
+
+// TestResourceDetailNoRefreshTokenStillErrors 没有 refresh token 时不假装成功，
+// 仍返回错误让前端提示——避免静默显示错误的 0。
+func TestResourceDetailNoRefreshTokenStillErrors(t *testing.T) {
+	up := &fakeUpstream{remain: 100}
+	up.sessionDead.Store(true)
+	a, p := newTestApp(t, provider.TraeWork, up, "uid-nort")
+	if au := p.AuthByUID("uid-nort"); au != nil {
+		au.RefreshToken = ""
+	}
+
+	if _, _, err := a.ResourceDetail("uid-nort"); err == nil {
+		t.Error("无 refresh token 时应报错，而不是静默返回空")
+	}
+	if up.refreshCalls.Load() != 0 {
+		t.Error("无 refresh token 时不应尝试刷新")
+	}
+}
