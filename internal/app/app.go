@@ -3,6 +3,7 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1228,6 +1229,21 @@ func (a *App) SetAPIKey(key string) error {
 	return nil
 }
 
+// SetAPIKeyV2 修改 v2 API 密钥。
+func (a *App) SetAPIKeyV2(key string) error {
+	key = strings.TrimSpace(key)
+	a.mu.Lock()
+	a.cfg.APIKeyV2 = key
+	err := config.Save(a.cfg, a.cfgPath)
+	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	a.handler.SetAPIKeyV2(key)
+	log.Printf("API-Key(v2) 已更新")
+	return nil
+}
+
 // SetAutostart 设置/取消开机自启。
 func (a *App) SetAutostart(on bool) error {
 	if err := platform.SetAutostart(on); err != nil {
@@ -1330,6 +1346,7 @@ type State struct {
 	ListenHost     string        `json:"listen_host"`
 	ListenPort     int           `json:"listen_port"`
 	APIKey         string        `json:"api_key"`
+	APIKeyV2       string        `json:"api_key_v2"`
 	LoginBusy      bool          `json:"login_busy"`
 	NextCheckin    string        `json:"next_checkin"`
 	Version        string        `json:"version"`
@@ -1353,6 +1370,7 @@ func (a *App) GetState() State {
 		ListenHost:     a.cfg.Listen.Host,
 		ListenPort:     a.cfg.Listen.Port,
 		APIKey:         a.cfg.APIKey,
+		APIKeyV2:       a.cfg.APIKeyV2,
 		LoginBusy:      a.LoginBusy(),
 		NextCheckin:    fmtTime(a.nextFire()),
 		Version:        Version,
@@ -1461,6 +1479,15 @@ func apiError(w http.ResponseWriter, status int, msg string) {
 
 // HandleAPI 注册管理 API 路由（挂到 server handler 的 /api/* 上）。
 // 无鉴权（个人单机工具），监听 0.0.0.0 时风险由用户承担。
+
+// benchResult 测速结果单条记录。
+type benchResult struct {
+	Model     string  `json:"model"`
+	LatencyMs float64 `json:"latency_ms"`
+	Status    string  `json:"status"`
+	Error     string  `json:"error,omitempty"`
+}
+
 func (a *App) HandleAPI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.GetState())
@@ -1591,6 +1618,17 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
+	mux.HandleFunc("POST /api/config/api_key_v2", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Key string `json:"key"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := a.SetAPIKeyV2(req.Key); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
 	mux.HandleFunc("POST /api/config/autostart", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			On bool `json:"on"`
@@ -1635,7 +1673,231 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		go a.safeGo(func() { a.Quit() })
 	})
+	// GET /api/benchmark — 并发测速（有限并发 + 10s 超时 + 渠道级跳过）。
+	// 结果逐条 SSE 推送，持久化到 benchmark-cache.json。
+	mux.HandleFunc("GET /api/benchmark", func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming not supported", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+
+		modelsByKind := a.handler.ChannelModels()
+		type task struct {
+			modelID string
+			kind    provider.Kind
+			mi      provider.ModelInfo
+		}
+		type channelTasks struct {
+			name  string
+			tasks []task
+		}
+		var channels []channelTasks
+		for kind, models := range modelsByKind {
+			ct := channelTasks{name: kind.String()}
+			for _, mi := range models {
+				ct.tasks = append(ct.tasks, task{
+					modelID: kind.String() + "/" + mi.ID,
+					kind:    kind,
+					mi:      mi,
+				})
+			}
+			channels = append(channels, ct)
+		}
+		if len(channels) == 0 {
+			fmt.Fprintf(w, "data: {\"done\":true,\"total\":0}\n\n")
+			flusher.Flush()
+			return
+		}
+
+		cached := make(map[string]benchResult)
+		var mu sync.Mutex
+		host := a.cfg.Listen.Host
+		if host == "0.0.0.0" || host == "" || host == "::" {
+			host = "127.0.0.1"
+		}
+		apiKey := a.cfg.APIKey
+		port := a.cfg.Listen.Port
+		client := &http.Client{Timeout: 10 * time.Second} // 10s 超时，超过的模型不可能是"最快"
+
+		// 把全量任务摊平为切片
+		var allTasks []task
+		for _, ct := range channels {
+			for _, t := range ct.tasks {
+				allTasks = append(allTasks, t)
+			}
+		}
+		total := len(allTasks)
+
+		// 并发池：3 个 worker，以结果到达顺序推送 SSE
+		type result struct {
+			task  task
+			res   benchResult
+		}
+		taskCh := make(chan task, total)
+		resultCh := make(chan result, total)
+		var wg sync.WaitGroup
+		numWorkers := 3
+
+		// 启动 worker
+		for i := 0; i < numWorkers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for t := range taskCh {
+					res := testOneModel(client, host, port, apiKey, t.modelID)
+					resultCh <- result{t, res}
+				}
+			}()
+		}
+
+		// 发送任务
+		go func() {
+			for _, t := range allTasks {
+				taskCh <- t
+			}
+			close(taskCh)
+			wg.Wait()
+			close(resultCh)
+		}()
+
+		// 消费结果：先出哪个模型就推送哪个（并发自然顺序）
+		for res := range resultCh {
+			mu.Lock()
+			cached[res.task.modelID] = res.res
+			mu.Unlock()
+			b, _ := json.Marshal(res.res)
+			fmt.Fprintf(w, "data: %s\n\n", b)
+			flusher.Flush()
+		}
+
+		// 持久化
+		stateDir := filepath.Dir(a.cfg.StateFile)
+		cachePath := filepath.Join(stateDir, "benchmark-cache.json")
+		cache := map[string]any{
+			"results":   cached,
+			"tested_at": time.Now().Format(time.RFC3339),
+		}
+		if cb, err := json.MarshalIndent(cache, "", "  "); err == nil {
+			_ = os.WriteFile(cachePath, cb, 0o644)
+		}
+
+		fmt.Fprintf(w, "data: {\"done\":true,\"total\":%d}\n\n", total)
+		flusher.Flush()
+	})
+
+	// GET /api/benchmark/state — 上次测速结果
+	mux.HandleFunc("GET /api/benchmark/state", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		stateDir := filepath.Dir(a.cfg.StateFile)
+		cachePath := filepath.Join(stateDir, "benchmark-cache.json")
+		raw, err := os.ReadFile(cachePath)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"results": nil})
+			return
+		}
+		var cache map[string]any
+		if err := json.Unmarshal(raw, &cache); err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"results": nil})
+			return
+		}
+		writeJSON(w, http.StatusOK, cache)
+	})
 }
+
+// testOneModel 测单个模型 TTFT。
+func testOneModel(client *http.Client, host string, port int, apiKey string, modelID string) benchResult {
+	start := time.Now()
+	body := fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"stream":true}`, modelID)
+	req, _ := http.NewRequest("POST",
+		fmt.Sprintf("http://%s:%d/v1/chat/completions", host, port),
+		strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		lat := float64(time.Since(start).Milliseconds())
+		return benchResult{Model: modelID, LatencyMs: lat, Status: "error", Error: err.Error()}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		lat := float64(time.Since(start).Milliseconds())
+		buf := make([]byte, 256)
+		n, _ := resp.Body.Read(buf)
+		return benchResult{Model: modelID, LatencyMs: lat, Status: "error",
+			Error: fmt.Sprintf("HTTP %d %s", resp.StatusCode, string(buf[:min(n, 100)]))}
+	}
+
+	// 逐行解析 SSE 直到找到首个内容 delta
+	br := bufio.NewReaderSize(resp.Body, 64*1024)
+	firstContentLat := float64(0)
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			if firstContentLat == 0 {
+				firstContentLat = float64(time.Since(start).Milliseconds())
+			}
+			break
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(line[5:])
+		if data == "[DONE]" {
+			if firstContentLat == 0 {
+				firstContentLat = float64(time.Since(start).Milliseconds())
+			}
+			break
+		}
+		var chunk map[string]any
+		if json.Unmarshal([]byte(data), &chunk) != nil {
+			continue
+		}
+		choices, _ := chunk["choices"].([]any)
+		if len(choices) == 0 {
+			continue
+		}
+		c, _ := choices[0].(map[string]any)
+		if c == nil {
+			continue
+		}
+		delta, _ := c["delta"].(map[string]any)
+		if delta == nil {
+			continue
+		}
+		content, _ := delta["content"].(string)
+		reasoning, _ := delta["reasoning_content"].(string)
+		if content == "" && reasoning == "" {
+			continue
+		}
+		firstContentLat = float64(time.Since(start).Milliseconds())
+		break
+	}
+	return benchResult{Model: modelID, LatencyMs: firstContentLat, Status: "ok"}
+}
+
+// benchResult 测速结果单条记录。
 
 // ---------------------------------------------------------------------------
 // 渠道费率信息（本地缓存 + 按需刷新）

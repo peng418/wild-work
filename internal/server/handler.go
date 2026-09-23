@@ -42,6 +42,7 @@ type Runtime struct {
 type Config struct {
 	Runtimes map[provider.Kind]*Runtime
 	APIKey   string // 空 = 不鉴权
+	APIKeyV2 string // v2 接口独立密钥，空 = 不鉴权
 
 	// WebUI 为内嵌的静态 Web UI 文件系统（go:embed 产物）；非 nil 时挂载到 /
 	WebUI fs.FS
@@ -74,7 +75,7 @@ type Handler struct {
 	cfg Config
 	mux *http.ServeMux
 
-	apiMu    sync.RWMutex // 保护 cfg.APIKey（面板可运行时修改）
+	apiMu    sync.RWMutex // 保护 cfg.APIKey / cfg.APIKeyV2（面板可运行时修改）
 	stickyMu sync.RWMutex
 	sticky   map[string]*stickyEntry // runtimeKind → stickyEntry
 }
@@ -106,6 +107,7 @@ func NewHandler(cfg Config) *Handler {
 	h := &Handler{cfg: cfg, mux: http.NewServeMux(), sticky: make(map[string]*stickyEntry)}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
+	h.mux.HandleFunc("GET /v2/models", h.withAuthV2(h.modelsV2))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
 	h.mux.HandleFunc("GET /healthz", h.healthz)
 	if cfg.WebUI != nil {
@@ -199,8 +201,32 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// withAuthV2 用于 /v2/* 端点：接受 v1 key 或 v2 key 任一。
+func (h *Handler) withAuthV2(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		key1 := h.currentAPIKey()
+		key2 := h.currentAPIKeyV2()
+		if key1 == "" && key2 == "" {
+			next(w, r)
+			return
+		}
+		authz := r.Header.Get("Authorization")
+		if strings.HasPrefix(authz, "Bearer ") {
+			token := strings.TrimPrefix(authz, "Bearer ")
+			if token == key1 || token == key2 {
+				next(w, r)
+				return
+			}
+		}
+		writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
+	}
+}
+
 // SetAPIKey 运行时修改内层 API Key（面板可调用）。
 func (h *Handler) SetAPIKey(key string) { h.apiMu.Lock(); defer h.apiMu.Unlock(); h.cfg.APIKey = key }
+
+// SetAPIKeyV2 运行时修改 v2 API Key（面板可调用）。
+func (h *Handler) SetAPIKeyV2(key string) { h.apiMu.Lock(); defer h.apiMu.Unlock(); h.cfg.APIKeyV2 = key }
 
 // CurrentAPIKey 读取当前生效的 API Key（供外层兼容层跟随面板修改）。
 func (h *Handler) CurrentAPIKey() string { return h.currentAPIKey() }
@@ -208,6 +234,11 @@ func (h *Handler) currentAPIKey() string {
 	h.apiMu.RLock()
 	defer h.apiMu.RUnlock()
 	return h.cfg.APIKey
+}
+func (h *Handler) currentAPIKeyV2() string {
+	h.apiMu.RLock()
+	defer h.apiMu.RUnlock()
+	return h.cfg.APIKeyV2
 }
 func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
@@ -252,6 +283,51 @@ const (
 
 func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": h.modelList()})
+}
+
+// modelsV2 返回可用模型列表：只有至少一个健康账号的渠道才会暴露其模型。
+// 健康条件：账号未禁用、未冷却、且积分 > 0。
+func (h *Handler) modelsV2(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": h.modelListV2()})
+}
+
+func (h *Handler) modelListV2() []map[string]any {
+	type rtModels struct {
+		kind   provider.Kind
+		infos  []provider.ModelInfo
+	}
+	var candidates []rtModels
+	for _, k := range h.runtimeKinds() {
+		rt := h.cfg.Runtimes[k]
+		if rt.Pool == nil || len(rt.Pool.List()) == 0 {
+			continue
+		}
+		// 检查是否有至少一个健康账号（未禁用、未冷却）
+		hasHealthy := false
+		for _, st := range rt.Pool.List() {
+			if !st.Cooling && !st.Disabled && st.Credits > 0 {
+				hasHealthy = true
+				break
+			}
+		}
+		if !hasHealthy {
+			continue
+		}
+		infos := h.fetchRuntimeModels(rt)
+		if len(infos) == 0 {
+			infos = rt.StaticModels
+		}
+		if len(infos) > 0 {
+			candidates = append(candidates, rtModels{kind: k, infos: infos})
+		}
+	}
+	out := make([]map[string]any, 0, len(candidates)*10)
+	for _, c := range candidates {
+		for _, mi := range c.infos {
+			out = append(out, buildModelEntry(c.kind, mi))
+		}
+	}
+	return out
 }
 
 func (h *Handler) modelList() []map[string]any {

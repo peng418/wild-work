@@ -309,6 +309,24 @@ body {
 
 .footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 24px; }
 
+/* ---------- 测速指示灯 ---------- */
+.bench-time { font-size: 12px; color: var(--muted); text-align: right; margin-top: 6px; }
+.speed-cell { display: inline-flex; align-items: center; }
+.speed-dot {
+  display: inline-flex; align-items: center; gap: 2px;
+  font-size: 12px; font-weight: 600; cursor: default;
+  padding: 1px 5px; border-radius: 10px;
+  white-space: nowrap;
+}
+.speed-white { color: #999; background: #eee; }
+.speed-green { color: #2e7d32; background: #e8f5e9; }
+.speed-yellow { color: #e65100; background: #fff3e0; }
+.speed-red { color: #c62828; background: #ffebee; }
+.speed-red.has-tip { cursor: help; }
+/* 测速中脉冲动画 */
+@keyframes speed-pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+.speed-cell.testing .speed-white { animation: speed-pulse 0.8s infinite; }
+
 @media (max-width: 640px) {
   .topbar { flex-wrap: wrap; }
   .top-info { order: 3; width: 100%; }

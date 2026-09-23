@@ -54,6 +54,11 @@ async function loadFees() {
   try {
     const fees = await api("/api/fees");
     renderFees(fees);
+    // 测速缓存加载后再渲染一次（保证指示灯显示）
+    if (Object.keys(benchCache).length === 0) {
+      await loadBenchmarkState();
+      if (Object.keys(benchCache).length > 0) renderFees(fees);
+    }
   } catch (e) { /* 费率接口失败不阻塞 */ }
 }
 
@@ -67,6 +72,172 @@ async function refreshFees() {
   } catch (e) { toast(e.message); } finally {
     $("btnRefreshFees").disabled = false;
   }
+}
+
+// ---------- 模型测速：SSE 流式并行 + 指示灯 ----------
+let benchCache = {};       // { modelID: {latency_ms, status, error} }
+let benchTestedAt = null;  // 上次测速时间字符串
+let benchRunning = false;
+
+// benchBase 返回直连 wild-work 的 base URL（绕过 fnOS 网关以支持 SSE 流式传输）
+function benchBase() {
+  // 优先取当前页面的 port：直连时 location.port 就是 5013，走网关时回退到 5013
+  const port = location.port || "5013";
+  // 网关代理（80/443）下 port 是 80/443，需要强制走 5013
+  if (port === "80" || port === "443") {
+    return location.protocol + "//" + location.hostname + ":5013";
+  }
+  return location.protocol + "//" + location.hostname + ":" + port;
+}
+
+// loadBenchmarkState 从后端拉取上次持久化的测速结果
+async function loadBenchmarkState() {
+  try {
+    const resp = await fetch(benchBase() + "/api/benchmark/state");
+    const data = await resp.json();
+    if (data && data.results) {
+      benchCache = data.results;
+      benchTestedAt = data.tested_at || null;
+      updateBenchmarkTime();
+    }
+  } catch (e) { /* 无缓存不报错 */ }
+}
+
+function updateBenchmarkTime() {
+  const el = $("benchTime");
+  if (benchTestedAt) {
+    const d = new Date(benchTestedAt);
+    const str = d.getFullYear() + "-" +
+      String(d.getMonth() + 1).padStart(2, "0") + "-" +
+      String(d.getDate()).padStart(2, "0") + " " +
+      String(d.getHours()).padStart(2, "0") + ":" +
+      String(d.getMinutes()).padStart(2, "0");
+    el.textContent = "上次测速：" + str;
+    el.style.display = "";
+  } else {
+    el.textContent = "";
+    el.style.display = "none";
+  }
+}
+
+// speedDot 返回模型速度指示灯 HTML
+// 白灯=未测, 绿灯=<300ms, 黄灯=≥300ms, 红灯=报错(带tooltip)
+function speedDot(modelFull) {
+  const r = benchCache[modelFull];
+  if (!r) {
+    return `<span class="speed-dot speed-white" title="未测速">○</span>`;
+  }
+  if (r.status === "error") {
+    const errShort = (r.error || "未知错误").substring(0, 80);
+    return `<span class="speed-dot speed-red" title="${esc(errShort)}">✗</span>`;
+  }
+  const ms = Math.round(r.latency_ms);
+  const cls = ms < 300 ? "speed-green" : "speed-yellow";
+  return `<span class="speed-dot ${cls}" title="首token ${ms}ms">${ms}ms</span>`;
+}
+
+// speedCell 返回速度列 HTML（灯 + 数字）
+function speedCell(modelFull) {
+  const r = benchCache[modelFull];
+  if (!r) {
+    return `<span class="speed-cell"><span class="speed-dot speed-white" title="未测速">○</span></span>`;
+  }
+  if (r.status === "error") {
+    const errShort = (r.error || "未知错误").substring(0, 80);
+    return `<span class="speed-cell"><span class="speed-dot speed-red has-tip" title="${esc(errShort)}">✗</span></span>`;
+  }
+  const ms = Math.round(r.latency_ms);
+  const cls = ms < 300 ? "speed-green" : "speed-yellow";
+  return `<span class="speed-cell"><span class="speed-dot ${cls}">${ms}ms</span></span>`;
+}
+
+async function runBenchmark() {
+  if (benchRunning) return;
+  benchRunning = true;
+  const btn = $("btnBenchmark");
+  btn.disabled = true;
+  btn.textContent = "⚡ 测速中...";
+
+  // 清空旧结果
+  benchCache = {};
+  benchTestedAt = null;
+  updateBenchmarkTime();
+  // 重绘费率表以显示白灯
+  if (state) {
+    try {
+      const fees = await api("/api/fees");
+      renderFees(fees);
+    } catch (e) { /* ignore */ }
+  }
+
+  try {
+    const resp = await fetch(benchBase() + "/api/benchmark");
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let done = false;
+    let tested = 0;
+
+    while (!done) {
+      const { value, done: streamDone } = await reader.read();
+      if (value) buffer += decoder.decode(value, { stream: true });
+      // 按行处理 SSE
+      const lines = buffer.split("\n");
+      buffer = lines.pop(); // 保留未完整行
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const json = line.slice(6);
+        const data = JSON.parse(json);
+        if (data.done) {
+          done = true;
+          benchTestedAt = new Date().toISOString();
+          updateBenchmarkTime();
+          tested = data.total || 0;
+        } else {
+          // 单个模型结果
+          benchCache[data.model] = {
+            latency_ms: data.latency_ms,
+            status: data.status,
+            error: data.error || "",
+          };
+          tested++;
+          // 更新该模型所在行的速度单元格
+          updateSpeedCells();
+          // 更新按钮提示
+          btn.textContent = `⚡ ${tested}个...`;
+        }
+      }
+    }
+  } catch (e) {
+    toast("测速失败：" + e.message);
+  } finally {
+    benchRunning = false;
+    btn.disabled = false;
+    btn.textContent = "⚡ 测速";
+    // 最后一次全量重绘确保一致性
+    try {
+      const fees = await api("/api/fees");
+      renderFees(fees);
+    } catch (e) { /* ignore */ }
+  }
+}
+
+// updateSpeedCells 仅更新已渲染 DOM 中的速度单元格（增量更新，不重绘全表）
+function updateSpeedCells() {
+  document.querySelectorAll(".speed-cell").forEach(cell => {
+    const model = cell.dataset.model;
+    if (!model) return;
+    const r = benchCache[model];
+    if (!r) return;
+    if (r.status === "error") {
+      const errShort = (r.error || "未知错误").substring(0, 80);
+      cell.innerHTML = `<span class="speed-dot speed-red has-tip" title="${esc(errShort)}">✗</span>`;
+    } else {
+      const ms = Math.round(r.latency_ms);
+      const cls = ms < 300 ? "speed-green" : "speed-yellow";
+      cell.innerHTML = `<span class="speed-dot ${cls}">${ms}ms</span>`;
+    }
+  });
 }
 
 // ---------- 积分明细 tooltip ----------
@@ -197,6 +368,7 @@ function render() {
   renderTopbar();
   renderAccounts();
   renderTimes();
+  $("chkAutostart").checked = state.autostart;
 }
 
 function renderTopbar() {
@@ -207,10 +379,15 @@ function renderTopbar() {
   const host = (state.listen_host === "0.0.0.0" || state.listen_host === "" || state.listen_host === "::")
     ? "127.0.0.1" : state.listen_host;
   const apiURL = `http://${host}:${state.listen_port}/v1`;
+  const apiURLV2 = `http://${host}:${state.listen_port}/v2`;
   $("apiAddr").querySelector(".val").textContent = apiURL;
+  $("apiAddrV2").querySelector(".val").textContent = apiURLV2;
 
   const key = state.api_key;
   $("apiKeyDisplay").querySelector(".val").textContent = key === "" ? "（无鉴权）" : key;
+
+  const keyV2 = state.api_key_v2;
+  $("apiKeyDisplayV2").querySelector(".val").textContent = keyV2 === "" ? "（无鉴权）" : keyV2;
 }
 
 // 渠道显示名与 CSS 短类名（后端 group / 费率 channel 均为 provider.Kind）。
@@ -317,10 +494,10 @@ function renderFees(fees) {
   }
 
   let html = `<div class="note">${esc(fees.note || "")}</div>`;
-  if (fees.cached_at) html += `<div class="note">费率上次更新：${esc(fees.cached_at)}</div>`;
-  if (fees.error) html += `<div class="note" style="color:var(--danger)">${esc(fees.error)}</div>`;
+    if (fees.cached_at) html += `<div class="note">费率上次更新：${esc(fees.cached_at)}</div>`;
+    if (fees.error) html += `<div class="note" style="color:var(--danger)">${esc(fees.error)}</div>`;
 
-  html += `<table><thead><tr><th>模型</th><th>倍率</th><th>模型</th><th>倍率</th></tr></thead><tbody>`;
+    html += `<table><thead><tr><th>模型</th><th>速度</th><th>倍率</th><th>模型</th><th>速度</th><th>倍率</th></tr></thead><tbody>`;
 
   const UNKNOWN_TIP = "上游未返回，请在客户端自行确认";
 
@@ -395,14 +572,16 @@ function renderFees(fees) {
     const chName = chLabel(ch.channel);
     const chCls = chClass(ch.channel);
     const models = ch.models || [];
-    html += `<tr class="ch-header ${chCls}"><td colspan="4">${esc(chName)}</td></tr>`;
-    // 每行两个模型
-    for (let i = 0; i < models.length; i += 2) {
-      const m1 = models[i];
-      const m2 = models[i + 1];
-      const id1 = m1 ? `<code title="${esc(modelTip(m1))}">${esc(m1.model)}</code>${capIcons(m1)}${noteCell(m1)}` : "";
-      const id2 = m2 ? `<code title="${esc(modelTip(m2))}">${esc(m2.model)}</code>${capIcons(m2)}${noteCell(m2)}` : "";
-      html += `<tr><td>${id1}</td><td>${rateCell(m1)}</td><td>${id2}</td><td>${rateCell(m2)}</td></tr>`;
+    html += `<tr class="ch-header ${chCls}"><td colspan="6">${esc(chName)}</td></tr>`;
+        // 每行两个模型
+        for (let i = 0; i < models.length; i += 2) {
+          const m1 = models[i];
+          const m2 = models[i + 1];
+          const id1 = m1 ? `<code title="${esc(modelTip(m1))}">${esc(m1.model)}</code>${capIcons(m1)}${noteCell(m1)}` : "";
+          const id2 = m2 ? `<code title="${esc(modelTip(m2))}">${esc(m2.model)}</code>${capIcons(m2)}${noteCell(m2)}` : "";
+          const sp1 = m1 ? `<span class="speed-cell" data-model="${esc(ch.channel + '/' + m1.model)}">${speedCell(ch.channel + '/' + m1.model)}</span>` : "";
+          const sp2 = m2 ? `<span class="speed-cell" data-model="${esc(ch.channel + '/' + m2.model)}">${speedCell(ch.channel + '/' + m2.model)}</span>` : "";
+          html += `<tr><td>${id1}</td><td>${sp1}</td><td>${rateCell(m1)}</td><td>${id2}</td><td>${sp2}</td><td>${rateCell(m2)}</td></tr>`;
     }
   }
 
@@ -711,8 +890,18 @@ async function saveApiConfig() {
 }
 
 // ---------- API Key 弹层 ----------
+let apiKeyMode = "v1"; // "v1" or "v2"
 function openApiKey() {
+  apiKeyMode = "v1";
+  $("apiKeyOverlay").querySelector(".modal-title").textContent = "修改 API-Key";
   $("keyInput").value = state.api_key;
+  $("apiKeyOverlay").classList.remove("hidden");
+  $("keyInput").focus();
+}
+function openApiKeyV2() {
+  apiKeyMode = "v2";
+  $("apiKeyOverlay").querySelector(".modal-title").textContent = "修改 v2 API-Key";
+  $("keyInput").value = state.api_key_v2 || "";
   $("apiKeyOverlay").classList.remove("hidden");
   $("keyInput").focus();
 }
@@ -724,9 +913,13 @@ function closeApiKey() {
 async function saveApiKey() {
   const key = $("keyInput").value.trim();
   try {
-    await api("/api/config/api_key", { key });
+    if (apiKeyMode === "v2") {
+      await api("/api/config/api_key_v2", { key });
+    } else {
+      await api("/api/config/api_key", { key });
+    }
     closeApiKey();
-    toast("API-Key 已更新");
+    toast(apiKeyMode === "v2" ? "v2 API-Key 已更新" : "API-Key 已更新");
     loadState();
   } catch (e) { toast(e.message); }
 }
@@ -780,20 +973,31 @@ function bind() {
   $("btnCopyUrl").onclick = copyUrl;
   $("btnCancelLogin").onclick = cancelLogin;
   $("btnRefreshFees").onclick = refreshFees;
-  $("chkAutostart").onchange = toggleAutostart;
+    $("btnBenchmark").onclick = runBenchmark;
+    $("chkAutostart").onchange = toggleAutostart;
 
   $("apiAddr").onclick = () => {
-    const v = $("apiAddr").querySelector(".val").textContent;
-    copyText(v, "OpenAI 接口地址");
-  };
-  $("apiKeyDisplay").onclick = () => {
-    const v = $("apiKeyDisplay").querySelector(".val").textContent;
-    if (v === "（无鉴权）") { toast("当前未设置 API-Key"); return; }
-    copyText(v, "API-Key");
-  };
-  // 修改图标点击弹配置对话框（不触发复制）
-  document.querySelectorAll(".icon-edit")[0].onclick = openApiConfig;
-  document.querySelectorAll(".icon-edit")[1].onclick = openApiKey;
+      const v = $("apiAddr").querySelector(".val").textContent;
+      copyText(v, "OpenAI 接口地址");
+    };
+    $("apiKeyDisplay").onclick = () => {
+      const v = $("apiKeyDisplay").querySelector(".val").textContent;
+      if (v === "（无鉴权）") { toast("当前未设置 API-Key"); return; }
+      copyText(v, "API-Key");
+    };
+    $("apiAddrV2").onclick = () => {
+      const v = $("apiAddrV2").querySelector(".val").textContent;
+      copyText(v, "v2 接口地址");
+    };
+    $("apiKeyDisplayV2").onclick = () => {
+      const v = $("apiKeyDisplayV2").querySelector(".val").textContent;
+      if (v === "（无鉴权）") { toast("当前未设置 v2 API-Key"); return; }
+      copyText(v, "v2 API-Key");
+    };
+    // 修改图标点击弹配置对话框（不触发复制）
+    document.querySelectorAll(".icon-edit")[0].onclick = openApiConfig;
+    document.querySelectorAll(".icon-edit")[1].onclick = openApiKey;
+    document.querySelectorAll(".icon-edit")[2].onclick = openApiKeyV2;
 
   $("btnHelp").onclick = openHelp;
   $("btnAbout").onclick = openAbout;

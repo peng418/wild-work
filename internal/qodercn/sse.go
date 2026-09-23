@@ -35,7 +35,7 @@ func parseNestedSSE(r io.Reader, onChunk func(map[string]any) error) error {
 					return nil
 				}
 				var chunk map[string]any
-				if json.Unmarshal([]byte(env.Body), &chunk) == nil {
+				if json.Unmarshal([]byte(env.Body), &chunk) == nil && chunk != nil {
 					if err := onChunk(chunk); err != nil {
 						return err
 					}

@@ -237,6 +237,7 @@ func main() {
 	inner := server.NewHandler(server.Config{
 		Runtimes:     runtimes,
 		APIKey:       cfg.APIKey,
+		APIKeyV2:     cfg.APIKeyV2,
 		HardCooldown: cfg.HardCreditDur,
 		SoftCooldown: cfg.SoftRateDur,
 		ErrThreshold: cfg.Cooldown.ErrThresh,

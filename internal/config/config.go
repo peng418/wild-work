@@ -90,6 +90,7 @@ func ParseListen(s string) (Listen, error) {
 type Config struct {
 	Listen    Listen `json:"listen"`
 	APIKey    string `json:"api_key"`    // 空 = 不鉴权
+	APIKeyV2  string `json:"api_key_v2"` // v2 接口独立密钥，空 = 不鉴权
 	AuthDir   string `json:"auth_dir"`   // ./auths
 	StateFile string `json:"state_file"` // ./data/state.json
 	Region    string `json:"region"`     // 只收 "cn"

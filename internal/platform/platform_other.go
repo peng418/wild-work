@@ -30,11 +30,20 @@ func LaunchIncognito(exe, flag, url string) error { return OpenURL(url) }
 // OpenURL 其他平台：xdg-open。
 func OpenURL(url string) error { return exec.Command("xdg-open", url).Start() }
 
-// SetAutostart 其他平台：未实现。
-func SetAutostart(on bool) error { return nil }
+// SetAutostart 其他平台：写/删 autostart 标记文件（fnOS 开机自启）。
+func SetAutostart(on bool) error {
+	const path = "/vol6/@appdata/wildwork/autostart"
+	if on {
+		return os.WriteFile(path, []byte("1"), 0644)
+	}
+	return os.Remove(path)
+}
 
-// AutostartEnabled 其他平台：false。
-func AutostartEnabled() bool { return false }
+// AutostartEnabled 其他平台：检查 autostart 文件是否存在（fnOS）。
+func AutostartEnabled() bool {
+	_, err := os.Stat("/vol6/@appdata/wildwork/autostart")
+	return err == nil
+}
 
 // OpenWithTextEditor 其他平台：xdg-open。
 func OpenWithTextEditor(path string) error { return exec.Command("xdg-open", path).Start() }

@@ -19,17 +19,26 @@
       </div>
     </div>
     <div class="top-info">
-      <div class="info-cell">
-        <span class="info-label">OpenAI接口</span>
-        <code class="info-value" id="apiAddr" title="点击复制地址"><span class="val"></span></code>
-        <span class="icon-edit" title="修改">✎</span>
-      </div>
-      <div class="info-cell">
-        <span class="info-label">API-Key</span>
-        <code class="info-value" id="apiKeyDisplay" title="点击复制密钥"><span class="val"></span></code>
-        <span class="icon-edit" title="修改">✎</span>
-      </div>
-    </div>
+          <div class="info-cell">
+            <span class="info-label">OpenAI接口</span>
+            <code class="info-value" id="apiAddr" title="点击复制地址"><span class="val"></span></code>
+            <span class="icon-edit" title="修改">✎</span>
+          </div>
+          <div class="info-cell">
+            <span class="info-label">API-Key</span>
+            <code class="info-value" id="apiKeyDisplay" title="点击复制密钥"><span class="val"></span></code>
+            <span class="icon-edit" title="修改">✎</span>
+          </div>
+          <div class="info-cell">
+            <span class="info-label">v2接口</span>
+            <code class="info-value" id="apiAddrV2" title="点击复制地址"><span class="val"></span></code>
+          </div>
+          <div class="info-cell">
+            <span class="info-label">v2 API-Key</span>
+            <code class="info-value" id="apiKeyDisplayV2" title="点击复制密钥"><span class="val"></span></code>
+            <span class="icon-edit" title="修改">✎</span>
+          </div>
+        </div>
     <div class="top-icons">
       <span class="icon-link" id="btnHelp" title="帮助">?</span>
       <span class="icon-link" id="btnAbout" title="关于">i</span>
@@ -87,12 +96,14 @@
 
   <!-- 模型列表和费率 -->
   <section class="panel">
-    <div class="panel-head">
-      <h2>模型列表和费率</h2>
-      <button class="btn small" id="btnRefreshFees">刷新</button>
-    </div>
-    <div id="feesBox" class="fees"></div>
-  </section>
+      <div class="panel-head">
+        <h2>模型列表和费率</h2>
+        <button class="btn small" id="btnRefreshFees">刷新</button>
+        <button class="btn small primary" id="btnBenchmark" title="测试所有模型的首 token 延迟">⚡ 测速</button>
+      </div>
+      <div id="feesBox" class="fees"></div>
+            <div class="bench-time" id="benchTime"></div>
+    </section>
 
   <div class="footer">wild-work — 多渠道账号聚合 · 仅供个人学习 · 右键托盘图标退出</div>
 </div>
