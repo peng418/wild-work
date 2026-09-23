@@ -910,6 +910,15 @@ function closeApiKey() {
   $("apiKeyOverlay").classList.add("hidden");
 }
 
+function generateKey() {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let key = "sk-";
+  for (let i = 0; i < 32; i++) {
+    key += chars[Math.floor(Math.random() * chars.length)];
+  }
+  $("keyInput").value = key;
+}
+
 async function saveApiKey() {
   const key = $("keyInput").value.trim();
   try {
@@ -1017,8 +1026,9 @@ function bind() {
   };
 
   $("btnKeySave").onclick = saveApiKey;
-  $("btnKeyCancel").onclick = closeApiKey;
-  $("keyInput").addEventListener("keydown", (e) => { if (e.key === "Enter") saveApiKey(); });
+    $("btnKeyCancel").onclick = closeApiKey;
+    $("btnKeyGenerate").onclick = generateKey;
+    $("keyInput").addEventListener("keydown", (e) => { if (e.key === "Enter") saveApiKey(); });
 
   // 点击弹层空白处关闭
   $("apiConfigOverlay").onclick = (e) => { if (e.target === $("apiConfigOverlay")) closeApiConfig(); };

@@ -38,9 +38,9 @@ body {
 .brand-text .ver { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 4px; }
 .brand-text .sub { font-size: 11px; color: var(--muted); }
 
-.top-info { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; flex: 1; max-width: 480px; }
-.info-cell { display: flex; align-items: center; gap: 8px; }
-.info-label { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.top-info { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; flex: 1; min-width: 0; }
+.info-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.info-label { font-size: 11px; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
 .info-value {
   font-size: 12px; color: var(--muted); background: #f0f2f5; padding: 4px 10px;
   border-radius: 6px; font-family: ui-monospace, monospace; cursor: pointer;
@@ -67,13 +67,13 @@ body {
 /* 面板区块 */
 .panel { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 16px; box-shadow: var(--shadow); }
 .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
-.panel-head h2 { font-size: 16px; font-weight: 600; }
+.panel-head h2 { font-size: 16px; font-weight: 600; flex-shrink: 0; white-space: nowrap; }
 
 /* 账号管理按钮区：外层 wrap 分三段 —— 左组(刷新/签到) + 弹性空白 + 右组(渠道三列 grid)。
    左组整体靠左、右组整体靠右，中间空白自动伸缩；左组窄时 wrap 换行不溢出。 */
-.panel-actions-wrap { display: flex; align-items: center; flex: 1; min-width: 0; }
-.pa-spacer { flex: 1; }
-.pa-left { display: flex; flex-direction: column; gap: 8px; }
+.panel-actions-wrap { display: flex; align-items: center; flex: 1; min-width: 0; gap: 8px; }
+.pa-spacer { flex: 1; min-width: 8px; }
+.pa-left { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
 .pa-left .btn { white-space: nowrap; align-self: flex-start; }
 .pa-right {
   display: grid;
@@ -102,6 +102,10 @@ body {
 .btn.tiny { padding: 2px 8px; font-size: 11px; border-radius: 6px; color: var(--primary); }
 .btn.tiny:hover { background: #eef2ff; border-color: var(--primary); }
 .panel-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* 生成 key 按钮 */
+.btn.alt { background: #f0f2f5; border-color: var(--border); color: var(--text); }
+.btn.alt:hover { background: #e5e7eb; }
 
 /* 模型映射编辑器 */
 .map-editor {
