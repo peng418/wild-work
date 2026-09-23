@@ -139,6 +139,26 @@ func (s *Scheduler) SetCheckinObserver(fn func(CheckinResult)) {
 	s.mu.Unlock()
 }
 
+// SetKeepaliveHours 运行中更新保活小时并唤醒调度循环。
+func (s *Scheduler) SetKeepaliveHours(hours []int) {
+	clean := make([]int, 0, len(hours))
+	seen := map[int]bool{}
+	for _, h := range hours {
+		if h >= 0 && h <= 23 && !seen[h] {
+			seen[h] = true
+			clean = append(clean, h)
+		}
+	}
+	sort.Ints(clean)
+	s.mu.Lock()
+	s.cfg.KeepaliveHours = clean
+	s.mu.Unlock()
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
 func (s *Scheduler) notifyCheckin(r CheckinResult) {
 	s.mu.Lock()
 	fn := s.onCheckin
@@ -169,6 +189,24 @@ func (s *Scheduler) NextFire() time.Time {
 	ch, kh := s.schedule()
 	all := append(append([]int{}, ch...), hoursToMinutes(kh)...)
 	return nextFireMinutes(time.Now(), all)
+}
+
+// NextKeepaliveFire 返回下次保活时间（仅保活，不含签到）。
+func (s *Scheduler) NextKeepaliveFire() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	all := hoursToMinutes(s.cfg.KeepaliveHours)
+	return nextFireMinutes(time.Now(), all)
+}
+
+// NextCheckinFire 返回下次签到时间（仅签到，不含保活）。
+func (s *Scheduler) NextCheckinFire() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.cfg.CheckinMinutes) == 0 {
+		return time.Time{}
+	}
+	return nextFireMinutes(time.Now(), s.cfg.CheckinMinutes)
 }
 
 // nextFire 保留旧测试/API语义：hours 为本地小时（0-23）。

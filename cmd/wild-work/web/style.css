@@ -332,11 +332,63 @@ body {
 .speed-cell.testing .speed-white { animation: speed-pulse 0.8s infinite; }
 
 @media (max-width: 640px) {
-  .topbar { flex-wrap: wrap; }
-  .top-info { order: 3; width: 100%; }
+  .topbar { flex-wrap: wrap; gap: 8px; padding: 10px 12px; }
+  .top-info { order: 3; width: 100%; gap: 4px 6px; }
+  .brand .logo { width: 32px; height: 32px; }
+  .brand-text .title { font-size: 15px; }
+  .info-label { font-size: 10px; }
+  .info-value { font-size: 11px; padding: 3px 6px; }
   .config-grid { grid-template-columns: 1fr; }
   .config-right { padding-left: 0; border-left: none; border-top: 1px solid var(--border); padding-top: 14px; }
   .acct-grid { grid-template-columns: 1fr; }
+  /* 费率表：手机端可横向滚动，不截断 */
+  .fees { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .fees table { min-width: 520px; }
+  .fees th, .fees td { padding: 6px 8px; font-size: 12px; }
+  .panel { padding: 12px 10px; }
+  .panel-head h2 { font-size: 13px; }
+  #app { padding: 10px 8px 40px; }
+  /* 账号按钮区：右组按钮 2 列 + wrap */
+  .panel-actions-wrap { flex-wrap: wrap; }
+  .pa-right {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+    width: 100%;
+  }
+  .pa-right .btn { font-size: 12px; padding: 5px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pa-left .btn { font-size: 12px; padding: 5px 8px; white-space: nowrap; }
+  .pa-spacer { display: none; }
+  /* 顶部信息：单列 flex 布局防裁切 */
+  .top-info {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+  .info-cell { flex-wrap: wrap; gap: 3px; }
+  .info-label { font-size: 10px; min-width: 0; }
+  .info-value { font-size: 10px; padding: 2px 5px; }
+  .info-value .val { max-width: 120px; }
+  .top-icons { gap: 4px; }
+  .icon-link { width: 26px; height: 26px; font-size: 13px; }
+  .brand .logo { width: 28px; height: 28px; }
+  .brand-text .title { font-size: 14px; }
+  .brand-text .ver { font-size: 10px; }
+  .brand-text .sub { display: none; }
+  /* 账号卡片紧凑 */
+  .acct-card { padding: 8px 10px; gap: 4px; }
+  .acct-card .acct-name { font-size: 12px; }
+  .acct-card .acct-uid { font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .acct-card .acct-credits { font-size: 15px; }
+  .acct-card .acct-credits .credit-num { font-size: 15px; }
+  .acct-card .acct-ops { gap: 2px; }
+  .icon-op { width: 24px; height: 24px; font-size: 12px; }
+  .acct-card .acct-mid { flex-wrap: wrap; gap: 4px; }
+  .badge { font-size: 9px; padding: 1px 5px; }
+  .acct-card .acct-checkin { font-size: 10px; }
+  /* 自动签到区：标题与时间同行；保活/自启标签字号与 h2 统一 */
+  .config-right .row span { font-size: 13px; }
+  .config-right .select { font-size: 13px; }
+  .panel-head .row .select { font-size: 13px; }
+  .panel-head .row .btn.small { font-size: 13px; }
 }
 /* qwenwork 千问办公渠道色（与 qoder 紫系区分，用青蓝） */
 .btn.primary.alt.qwenwork { background: #0e7490; border-color: #0e7490; }

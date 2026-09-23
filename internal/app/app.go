@@ -211,6 +211,20 @@ func (a *App) nextFire() time.Time {
 	return time.Time{}
 }
 
+func (a *App) nextCheckinFire() time.Time {
+	if rt := a.firstRuntime(); rt != nil && rt.Scheduler != nil {
+		return rt.Scheduler.NextCheckinFire()
+	}
+	return time.Time{}
+}
+
+func (a *App) nextKeepaliveFire() time.Time {
+	if rt := a.firstRuntime(); rt != nil && rt.Scheduler != nil {
+		return rt.Scheduler.NextKeepaliveFire()
+	}
+	return time.Time{}
+}
+
 // SetHandler 注入内层 HTTP handler（在 HandleAPI 注册后调用）。
 func (a *App) SetHandler(h *server.Handler) {
 	a.handler = h
@@ -1194,6 +1208,44 @@ func (a *App) SetCheckinTimes(times []string) error {
 	return nil
 }
 
+// SetKeepaliveHours 更新保活小时并唤醒调度循环。
+func (a *App) SetKeepaliveHours(hours []int) error {
+	clean := make([]int, 0, len(hours))
+	seen := map[int]bool{}
+	for _, h := range hours {
+		if h >= 0 && h <= 23 && !seen[h] {
+			seen[h] = true
+			clean = append(clean, h)
+		}
+	}
+	sort.Ints(clean)
+	if len(clean) == 0 {
+		return errors.New("保活小时必须在 0-23 之间")
+	}
+	a.mu.Lock()
+	a.cfg.Schedule.KeepaliveHours = clean
+	err := config.Save(a.cfg, a.cfgPath)
+	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	for _, rt := range a.runtimes {
+		if rt != nil && rt.Scheduler != nil {
+			rt.Scheduler.SetKeepaliveHours(clean)
+		}
+	}
+	log.Printf("保活时间已更新：%s", formatKeepalive(clean))
+	return nil
+}
+
+func formatKeepalive(hours []int) string {
+	parts := make([]string, len(hours))
+	for i, h := range hours {
+		parts[i] = fmt.Sprintf("%02d:00", h)
+	}
+	return strings.Join(parts, "、")
+}
+
 // SetListen 修改 API 监听主机 + 端口：保存配置并热切换监听。
 func (a *App) SetListen(host string, port int) error {
 	if port <= 0 || port > 65535 {
@@ -1349,6 +1401,7 @@ type State struct {
 	APIKeyV2       string        `json:"api_key_v2"`
 	LoginBusy      bool          `json:"login_busy"`
 	NextCheckin    string        `json:"next_checkin"`
+	NextKeepalive  string        `json:"next_keepalive"`
 	Version        string        `json:"version"`
 	Autostart      bool          `json:"autostart"`
 	Running        bool          `json:"running"`
@@ -1372,7 +1425,8 @@ func (a *App) GetState() State {
 		APIKey:         a.cfg.APIKey,
 		APIKeyV2:       a.cfg.APIKeyV2,
 		LoginBusy:      a.LoginBusy(),
-		NextCheckin:    fmtTime(a.nextFire()),
+		NextCheckin:    fmtTime(a.nextCheckinFire()),
+		NextKeepalive:  fmtTime(a.nextKeepaliveFire()),
 		Version:        Version,
 		Autostart:      a.AutostartEnabled(),
 		Running:        a.ServerRunning(),
@@ -1590,6 +1644,17 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if err := a.SetCheckinTimes(req.Times); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+	mux.HandleFunc("POST /api/config/keepalive_hours", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Hours []int `json:"hours"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := a.SetKeepaliveHours(req.Hours); err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}

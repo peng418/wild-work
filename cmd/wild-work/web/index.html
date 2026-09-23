@@ -73,26 +73,30 @@
     <div id="acctEmpty" class="empty hidden">还没有账号，点击上方按钮添加</div>
   </section>
 
-  <!-- 自动签到 + 开机自启 -->
-  <section class="panel">
-    <div class="panel-head"><h2>自动签到</h2></div>
-    <div class="config-grid">
-      <div class="config-left">
-        <div class="row wrap">
-          <div id="timesBox" class="times"></div>
-          <button class="icon-btn" id="btnAddTime" title="增加一个签到时间">＋</button>
-        </div>
-        <div class="hint">保活 22:00 自动 · 下次 <span id="nextCheckin">-</span></div>
-      </div>
-      <div class="config-right">
-        <div class="row">
-          <span>开机自启</span>
-          <label class="switch"><input type="checkbox" id="chkAutostart"><span class="slider"></span></label>
-        </div>
-        <div class="hint">程序随系统启动自动运行</div>
-      </div>
-    </div>
-  </section>
+  <!-- 自动签到 + 保活 + 开机自启 -->
+        <section class="panel">
+          <div class="config-grid">
+            <div class="config-left">
+              <div class="row">
+                <span>自动签到</span>
+                <select id="checkinTime" class="select" style="width:auto"></select>
+                <button class="btn small primary" id="btnSaveCheckinTime">保存</button>
+              </div>
+              <div class="hint">下次签到 <span id="nextCheckin">-</span> · 保活 <span id="nextKeepalive">-</span></div>
+            </div>
+            <div class="config-right">
+              <div class="row">
+                <span>保活小时</span>
+                <select id="keepaliveHour" class="select" style="width:auto"></select>
+                <button class="btn small primary" id="btnSaveKeepalive">保存</button>
+              </div>
+              <div class="row" style="margin-top:10px">
+                <span>开机自启</span>
+                <label class="switch"><input type="checkbox" id="chkAutostart"><span class="slider"></span></label>
+              </div>
+            </div>
+          </div>
+        </section>
 
   <!-- 模型列表和费率 -->
   <section class="panel">

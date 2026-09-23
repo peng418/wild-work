@@ -476,13 +476,6 @@ function renderAccounts() {
   }).join("");
 }
 
-function renderTimes() {
-  const box = $("timesBox");
-  box.innerHTML = (state.checkin_times || []).map((t) =>
-    `<span class="time-chip" title="点击删除" onclick="delTime('${t}')">${t} ✕</span>`).join("");
-  $("nextCheckin").textContent = state.next_checkin || "-";
-}
-
 function renderFees(fees) {
   const box = $("feesBox");
   const channels = fees.channels || [];
@@ -737,23 +730,59 @@ function stopLoginPoll() {
 }
 
 // ---------- 签到时间 ----------
-function delTime(t) {
-  const times = (state.checkin_times || []).filter((x) => x !== t);
-  saveTimes(times);
-}
-
-function addTime() {
-  const times = (state.checkin_times || []).slice();
-  const now = new Date();
-  const next = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-  if (!times.includes(next)) times.push(next);
-  saveTimes(times.sort());
-}
-
-async function saveTimes(times) {
+async function saveCheckinTime() {
+  const sel = $("checkinTime");
+  if (!sel) return;
+  const h = parseInt(sel.value, 10);
+  if (isNaN(h) || h < 0 || h > 23) { toast("无效时间"); return; }
+  const fmt = String(h).padStart(2, "0") + ":00";
   try {
-    await api("/api/config/checkin_times", { times });
-    toast("签到时间已更新");
+    await api("/api/config/checkin_times", { times: [fmt] });
+    toast("签到时间已设为 " + fmt);
+    loadState();
+  } catch (e) { toast(e.message); }
+}
+
+function renderTimes() {
+  const times = state.checkin_times || [];
+  // 填充签到时间下拉
+  const selCk = $("checkinTime");
+  if (selCk) {
+    const cur = times.length > 0 ? parseInt(times[0], 10) : 9;
+    selCk.innerHTML = "";
+    for (let h = 0; h <= 23; h++) {
+      const opt = document.createElement("option");
+      opt.value = h;
+      opt.textContent = String(h).padStart(2, "0") + ":00";
+      if (h === cur) opt.selected = true;
+      selCk.appendChild(opt);
+    }
+  }
+  $("nextCheckin").textContent = state.next_checkin || "-";
+  $("nextKeepalive").textContent = state.next_keepalive || "-";
+  // 填充保活小时下拉
+  const sel = $("keepaliveHour");
+  if (sel) {
+    const cur = state.keepalive_hours && state.keepalive_hours.length > 0 ? state.keepalive_hours[0] : 22;
+    sel.innerHTML = "";
+    for (let h = 0; h <= 23; h++) {
+      const opt = document.createElement("option");
+      opt.value = h;
+      opt.textContent = String(h).padStart(2, "0") + ":00";
+      if (h === cur) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  }
+}
+
+async function saveKeepalive() {
+  const sel = $("keepaliveHour");
+  if (!sel) return;
+  const h = parseInt(sel.value, 10);
+  if (isNaN(h) || h < 0 || h > 23) { toast("无效保活小时"); return; }
+  try {
+    await api("/api/config/keepalive_hours", { hours: [h] });
+    toast("保活时间已设为 " + String(h).padStart(2, "0") + ":00");
     loadState();
   } catch (e) { toast(e.message); }
 }
@@ -978,12 +1007,14 @@ function bind() {
   $("btnAddQwen").onclick = () => promptLogin("qwenwork");
   $("btnCheckinAll").onclick = checkinAll;
   $("btnRefreshAll").onclick = refreshAll;
-  $("btnAddTime").onclick = addTime;
   $("btnCopyUrl").onclick = copyUrl;
   $("btnCancelLogin").onclick = cancelLogin;
   $("btnRefreshFees").onclick = refreshFees;
     $("btnBenchmark").onclick = runBenchmark;
     $("chkAutostart").onchange = toggleAutostart;
+
+  $("btnSaveCheckinTime").onclick = saveCheckinTime;
+  $("btnSaveKeepalive").onclick = saveKeepalive;
 
   $("apiAddr").onclick = () => {
       const v = $("apiAddr").querySelector(".val").textContent;
