@@ -38,8 +38,11 @@ import (
 	"wild-work/internal/server"
 )
 
-// Version 版本号。
+// Version 版本号（wild-work 上游版本）。
 const Version = "2.4.1"
+
+// FpkVersion FPK 打包版本号（由构建脚本通过 ldflags -X 注入，默认 0.0.0 表示未注入）。
+var FpkVersion = "0.0.0"
 
 const (
 	loginTimeout   = 5 * time.Minute
@@ -1403,6 +1406,7 @@ type State struct {
 	NextCheckin    string        `json:"next_checkin"`
 	NextKeepalive  string        `json:"next_keepalive"`
 	Version        string        `json:"version"`
+	FpkVersion     string        `json:"fpk_version"`
 	Autostart      bool          `json:"autostart"`
 	Running        bool          `json:"running"`
 
@@ -1428,6 +1432,7 @@ func (a *App) GetState() State {
 		NextCheckin:    fmtTime(a.nextCheckinFire()),
 		NextKeepalive:  fmtTime(a.nextKeepaliveFire()),
 		Version:        Version,
+		FpkVersion:     FpkVersion,
 		Autostart:      a.AutostartEnabled(),
 		Running:        a.ServerRunning(),
 	}
@@ -1885,6 +1890,72 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, cache)
 	})
+
+	// GET /api/check_update — 检查 GitHub Releases 是否有新版本。
+	mux.HandleFunc("GET /api/check_update", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Get("https://api.github.com/repos/peng418/wildwork-fpk/releases/latest")
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"has_update": false,
+				"error":      "检查更新失败：" + err.Error(),
+			})
+			return
+		}
+		defer resp.Body.Close()
+
+		var release struct {
+			TagName string `json:"tag_name"`
+			HTMLURL string `json:"html_url"`
+			Body    string `json:"body"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"has_update": false,
+				"error":      "解析 Release 信息失败",
+			})
+			return
+		}
+
+		tag := strings.TrimPrefix(release.TagName, "v")
+		currentVer := FpkVersion
+		hasUpdate := false
+		if tag != "" && currentVer != "0.0.0" {
+			// 简单版本号比较：分段比较数字部分
+			curParts := strings.Split(currentVer, ".")
+			tagParts := strings.Split(tag, ".")
+			for i := 0; i < 3; i++ {
+				var curN, tagN int
+				if i < len(curParts) {
+					fmt.Sscanf(curParts[i], "%d", &curN)
+				}
+				if i < len(tagParts) {
+					fmt.Sscanf(tagParts[i], "%d", &tagN)
+				}
+				if tagN > curN {
+					hasUpdate = true
+					break
+				} else if tagN < curN {
+					break
+				}
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"has_update":    hasUpdate,
+			"current":       currentVer,
+			"latest":        tag,
+			"latest_tag":    release.TagName,
+			"html_url":      release.HTMLURL,
+			"release_notes": release.Body,
+		})
+	})
 }
 
 // testOneModel 测单个模型 TTFT。
@@ -1913,15 +1984,15 @@ func testOneModel(client *http.Client, host string, port int, apiKey string, mod
 			Error: fmt.Sprintf("HTTP %d %s", resp.StatusCode, string(buf[:min(n, 100)]))}
 	}
 
-	// 逐行解析 SSE 直到找到首个内容 delta
+	// 逐行解析 SSE，同时记录「是否真收到内容」。只看 HTTP 200 会把上游包在 200 里的
+	// 错误信封（千问办公的 503 Model catalog unavailable 就是这样）以及直接空 body 的流
+	// 都判成 ok —— 已废渠道因此在面板上显示绿色，比报错更误导。
 	br := bufio.NewReaderSize(resp.Body, 64*1024)
 	firstContentLat := float64(0)
+	sawContent, sawDone, envErr := false, false, ""
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil {
-			if firstContentLat == 0 {
-				firstContentLat = float64(time.Since(start).Milliseconds())
-			}
 			break
 		}
 		line = strings.TrimRight(line, "\r\n")
@@ -1930,14 +2001,15 @@ func testOneModel(client *http.Client, host string, port int, apiKey string, mod
 		}
 		data := strings.TrimSpace(line[5:])
 		if data == "[DONE]" {
-			if firstContentLat == 0 {
-				firstContentLat = float64(time.Since(start).Milliseconds())
-			}
+			sawDone = true
 			break
 		}
 		var chunk map[string]any
 		if json.Unmarshal([]byte(data), &chunk) != nil {
 			continue
+		}
+		if e, ok := chunk["error"]; ok && envErr == "" {
+			envErr = fmt.Sprintf("%v", e)
 		}
 		choices, _ := chunk["choices"].([]any)
 		if len(choices) == 0 {
@@ -1956,8 +2028,23 @@ func testOneModel(client *http.Client, host string, port int, apiKey string, mod
 		if content == "" && reasoning == "" {
 			continue
 		}
+		sawContent = true
 		firstContentLat = float64(time.Since(start).Milliseconds())
 		break
+	}
+	lat := float64(time.Since(start).Milliseconds())
+	if !sawContent {
+		switch {
+		case envErr != "":
+			return benchResult{Model: modelID, LatencyMs: lat, Status: "error",
+				Error: "upstream error: " + envErr}
+		case sawDone:
+			return benchResult{Model: modelID, LatencyMs: lat, Status: "error",
+				Error: "上游只回了 [DONE]，没有任何内容"}
+		default:
+			return benchResult{Model: modelID, LatencyMs: lat, Status: "error",
+				Error: "上游 200 但流为空（未收到任何 content/[DONE]）"}
+		}
 	}
 	return benchResult{Model: modelID, LatencyMs: firstContentLat, Status: "ok"}
 }

@@ -9,110 +9,154 @@
 <body>
 <div id="app">
 
-  <!-- 顶部 -->
+  <!-- ===== 顶部导航 ===== -->
   <header class="topbar">
     <div class="brand">
-      <img class="logo" src="./logo64.png" alt="logo" onerror="this.style.display='none'">
+      <img class="logo" src="./logo64.png" alt="W" onerror="this.outerHTML='<div class=logo>W</div>'">
       <div class="brand-text">
         <div class="title">wild-work <span class="ver" id="ver"></span></div>
         <div class="sub" id="serverLine"></div>
       </div>
     </div>
     <div class="top-info">
-          <div class="info-cell">
-            <span class="info-label">OpenAI接口</span>
-            <code class="info-value" id="apiAddr" title="点击复制地址"><span class="val"></span></code>
-            <span class="icon-edit" title="修改">✎</span>
-          </div>
-          <div class="info-cell">
-            <span class="info-label">API-Key</span>
-            <code class="info-value" id="apiKeyDisplay" title="点击复制密钥"><span class="val"></span></code>
-            <span class="icon-edit" title="修改">✎</span>
-          </div>
-          <div class="info-cell">
-            <span class="info-label">v2接口</span>
-            <code class="info-value" id="apiAddrV2" title="点击复制地址"><span class="val"></span></code>
-          </div>
-          <div class="info-cell">
-            <span class="info-label">v2 API-Key</span>
-            <code class="info-value" id="apiKeyDisplayV2" title="点击复制密钥"><span class="val"></span></code>
-            <span class="icon-edit" title="修改">✎</span>
-          </div>
-        </div>
+      <div class="info-group">
+        <span class="info-label">OpenAI</span>
+        <span class="info-value" id="apiAddr" title="点击复制地址"><span class="val"></span><span class="icon-edit" title="复制">📋</span></span>
+      </div>
+      <div class="info-group">
+        <span class="info-label">API-Key</span>
+        <span class="info-value" id="apiKeyDisplay" title="点击复制密钥"><span class="val"></span><span class="icon-edit" title="编辑">✎</span></span>
+      </div>
+      <div class="info-group">
+        <span class="info-label">v2 接口</span>
+        <span class="info-value" id="apiAddrV2" title="点击复制地址"><span class="val"></span></span>
+      </div>
+      <div class="info-group">
+        <span class="info-label">v2 Key</span>
+        <span class="info-value" id="apiKeyDisplayV2" title="点击复制密钥"><span class="val"></span><span class="icon-edit" title="编辑">✎</span></span>
+      </div>
+    </div>
     <div class="top-icons">
-      <span class="icon-link" id="btnHelp" title="帮助">?</span>
-      <span class="icon-link" id="btnAbout" title="关于">i</span>
+      <button class="icon-link" id="btnHelp" title="帮助">?</button>
+      <button class="icon-link" id="btnAbout" title="关于">i</button>
     </div>
   </header>
 
-  <!-- 账号管理 -->
-  <section class="panel">
+  <!-- ===== KPI 概览行（由 app.js 动态填充） ===== -->
+  <div class="stats-row" id="statsRow">
+    <div class="stat-card" id="statAccounts">
+      <div class="stat-label">总账号</div>
+      <div class="stat-value" id="statAcctCount">-</div>
+      <div class="stat-change muted" id="statAcctDetail"></div>
+    </div>
+    <div class="stat-card" id="statCredits">
+      <div class="stat-label">可用积分</div>
+      <div class="stat-value" id="statCreditTotal">-</div>
+      <div class="stat-change muted" id="statCreditDetail"></div>
+    </div>
+    <div class="stat-card" id="statChannels">
+      <div class="stat-label">已接入渠道</div>
+      <div class="stat-value" id="statChCount">-</div>
+      <div class="stat-change muted" id="statChDetail"></div>
+    </div>
+    <div class="stat-card" id="statModels">
+      <div class="stat-label">可用模型</div>
+      <div class="stat-value" id="statModelCount">-</div>
+      <div class="stat-change muted" id="statModelDetail"></div>
+    </div>
+  </div>
+
+  <!-- ===== 欢迎 / 登录引导（无账号时显示，隐藏其余面板） ===== -->
+  <section class="panel welcome-panel hidden" id="welcomeOverlay">
+    <div class="welcome-box">
+      <img class="welcome-logo" src="./logo64.png" alt="W" onerror="this.outerHTML='<div class=&quot;welcome-logo&quot;>W</div>'">
+      <h1 class="welcome-title">wild-work</h1>
+      <p class="welcome-desc">多渠道 AI 账号聚合平台</p>
+      <p class="welcome-sub">轻量 API 网关 · 6 条渠道 · 自动签到与保活</p>
+      <div class="welcome-divider"></div>
+      <p class="welcome-prompt">请选择一个渠道登录，添加你的第一个账号：</p>
+      <div class="welcome-channels">
+        <button class="btn channel-btn wb" id="welcomeAddWB">WorkBuddyCN</button>
+        <button class="btn channel-btn qodercn" id="welcomeAddQoderCN">QoderCN</button>
+        <button class="btn channel-btn trae" id="welcomeAddTrae">TraeWork</button>
+        <button class="btn channel-btn wbai" id="welcomeAddWBAI">WorkBuddyAI</button>
+        <button class="btn channel-btn qodercom" id="welcomeAddQoderCOM">QoderCOM</button>
+        <button class="btn channel-btn qwenwork" id="welcomeAddQwen">千问办公</button>
+      </div>
+      <p class="welcome-hint">添加账号后，积分、签到状态与六渠道费率会自动显示在本页。</p>
+    </div>
+  </section>
+
+  <!-- ===== 账号管理 ===== -->
+  <section class="panel" id="acctPanelBody">
     <div class="panel-head">
-      <h2>账号管理</h2>
+      <h2>📋 账号管理 <span class="count" id="acctCountBadge">0</span></h2>
       <div class="panel-actions-wrap">
-        <!-- 左组：刷新积分/全部签到，整体靠左 -->
-        <div class="pa-group pa-left">
-          <button class="btn primary" id="btnRefreshAll">刷新积分</button>
-          <button class="btn" id="btnCheckinAll">全部签到</button>
+        <div class="pa-left">
+          <button class="btn primary small" id="btnRefreshAll">🔄 刷新积分</button>
+          <button class="btn small" id="btnCheckinAll">✓ 全部签到</button>
         </div>
-        <!-- 中间弹性空白由 flex:1 撑开 -->
-        <div class="pa-spacer"></div>
-        <!-- 右组：渠道添加三列 grid，整体靠右；末列留白 -->
-        <!-- 布局：行1 = WorkBuddyCN | QoderCN | TraeWork；行2 = WorkBuddyAI | QoderCOM | 千问办公；旧 Qoder 渠道已下线（代码保留，仅删界面入口） -->
-        <div class="pa-group pa-right">
-          <button class="btn primary" id="btnAddWB" style="grid-column:1;grid-row:1">＋ WorkBuddyCN</button>
-          <button class="btn primary alt qodercn" id="btnAddQoderCN" style="grid-column:2;grid-row:1">＋ QoderCN</button>
-          <button class="btn primary alt" id="btnAddTrae" style="grid-column:3;grid-row:1">＋ TraeWork</button>
-          <button class="btn primary alt wbai" id="btnAddWBAI" style="grid-column:1;grid-row:2">＋ WorkBuddyAI</button>
-          <button class="btn primary alt qodercom" id="btnAddQoderCOM" style="grid-column:2;grid-row:2">＋ QoderCOM</button>
-          <button class="btn primary alt qwenwork" id="btnAddQwen" style="grid-column:3;grid-row:2">＋ 千问办公</button>
+        <div class="pa-right">
+          <div class="channel-grid">
+            <button class="btn small primary" id="btnAddWB">＋ WorkBuddyCN</button>
+            <button class="btn small primary alt qodercn" id="btnAddQoderCN">＋ QoderCN</button>
+            <button class="btn small primary alt" id="btnAddTrae">＋ TraeWork</button>
+            <button class="btn small primary alt wbai" id="btnAddWBAI">＋ WorkBuddyAI</button>
+            <button class="btn small primary alt qodercom" id="btnAddQoderCOM">＋ QoderCOM</button>
+            <button class="btn small primary alt qwenwork" id="btnAddQwen">＋ 千问办公</button>
+          </div>
         </div>
       </div>
     </div>
     <div id="acctList" class="acct-grid"></div>
-    <div id="acctEmpty" class="empty hidden">还没有账号，点击上方按钮添加</div>
   </section>
 
-  <!-- 自动签到 + 保活 + 开机自启 -->
-        <section class="panel">
-          <div class="config-grid">
-            <div class="config-left">
-              <div class="row">
-                <span>自动签到</span>
-                <select id="checkinTime" class="select" style="width:auto"></select>
-                <button class="btn small primary" id="btnSaveCheckinTime">保存</button>
-              </div>
-              <div class="hint">下次签到 <span id="nextCheckin">-</span> · 保活 <span id="nextKeepalive">-</span></div>
-            </div>
-            <div class="config-right">
-              <div class="row">
-                <span>保活小时</span>
-                <select id="keepaliveHour" class="select" style="width:auto"></select>
-                <button class="btn small primary" id="btnSaveKeepalive">保存</button>
-              </div>
-              <div class="row" style="margin-top:10px">
-                <span>开机自启</span>
-                <label class="switch"><input type="checkbox" id="chkAutostart"><span class="slider"></span></label>
-              </div>
-            </div>
-          </div>
-        </section>
+  <!-- ===== 自动签到 + 保活 + 开机自启 ===== -->
+  <section class="panel" id="configSection">
+    <div class="panel-head"><h2>⚙️ 自动任务</h2></div>
+    <div class="config-grid">
+      <div class="config-card">
+        <div class="config-label">⏰ 自动签到</div>
+        <div class="config-row">
+          <span style="font-size:13px;color:var(--muted-light)">每日</span>
+          <select id="checkinTime" class="select" style="width:auto"></select>
+          <button class="btn small primary" id="btnSaveCheckinTime">保存</button>
+        </div>
+        <div class="config-hint">下次签到 <strong id="nextCheckin">-</strong> · 保活 <strong id="nextKeepalive">-</strong></div>
+      </div>
+      <div class="config-card">
+        <div class="config-label">🛡️ 保活 &amp; 自启</div>
+        <div class="config-row">
+          <span style="font-size:13px;color:var(--muted-light)">保活小时</span>
+          <select id="keepaliveHour" class="select" style="width:auto"></select>
+          <button class="btn small primary" id="btnSaveKeepalive">保存</button>
+        </div>
+        <div class="config-row">
+          <span style="font-size:13px;color:var(--muted-light)">开机自启</span>
+          <label class="switch"><input type="checkbox" id="chkAutostart"><span class="slider-round"></span></label>
+        </div>
+      </div>
+    </div>
+  </section>
 
-  <!-- 模型列表和费率 -->
-  <section class="panel">
-      <div class="panel-head">
-        <h2>模型列表和费率</h2>
-        <button class="btn small" id="btnRefreshFees">刷新</button>
+  <!-- ===== 模型列表和费率 ===== -->
+  <section class="panel" id="feesPanel">
+    <div class="panel-head">
+      <h2>🚀 模型列表 &amp; 费率 <span class="count" id="modelCountBadge">0</span></h2>
+      <div style="display:flex;gap:6px">
+        <button class="btn small ghost" id="btnRefreshFees">🔄 刷新</button>
         <button class="btn small primary" id="btnBenchmark" title="测试所有模型的首 token 延迟">⚡ 测速</button>
       </div>
-      <div id="feesBox" class="fees"></div>
-            <div class="bench-time" id="benchTime"></div>
-    </section>
+    </div>
+    <div id="feesBox" class="fees"></div>
+    <div class="bench-time" id="benchTime"></div>
+  </section>
 
+  <!-- ===== Footer ===== -->
   <div class="footer">wild-work — 多渠道账号聚合 · 仅供个人学习 · 右键托盘图标退出</div>
 </div>
 
-<!-- 添加账号确认弹层 -->
+<!-- ===== 添加账号确认弹层 ===== -->
 <div class="overlay hidden" id="loginConfirmOverlay">
   <div class="modal">
     <div class="modal-title" id="lcTitle">添加账号</div>
@@ -126,7 +170,7 @@
   </div>
 </div>
 
-<!-- 添加账号弹层 -->
+<!-- ===== 添加账号弹层（登录中） ===== -->
 <div class="overlay hidden" id="loginOverlay">
   <div class="modal">
     <div class="modal-title" id="loginTitle">添加账号</div>
@@ -140,7 +184,7 @@
   </div>
 </div>
 
-<!-- 确认弹层 -->
+<!-- ===== 确认弹层 ===== -->
 <div class="overlay hidden" id="confirmOverlay">
   <div class="modal">
     <div class="modal-title">确认操作</div>
@@ -152,7 +196,7 @@
   </div>
 </div>
 
-<!-- API 配置弹层 -->
+<!-- ===== API 配置弹层 ===== -->
 <div class="overlay hidden" id="apiConfigOverlay">
   <div class="modal">
     <div class="modal-title">API 配置</div>
@@ -169,7 +213,7 @@
       </div>
       <div id="customHostRow" class="row hidden"><input id="inHost" class="input grow" placeholder="如 192.0.2.10" spellcheck="false"></div>
       <div class="risk-tip">⚠️ 监听 0.0.0.0 时，局域网内任何设备都可访问本 API 与账号管理，风险请自行评估。</div>
-      <hr>
+      <hr style="border-color:var(--border);margin:12px 0">
       <div class="row" style="margin-top:8px"><label class="lbl">默认渠道</label>
         <select id="selCh" class="select"></select>
       </div>
@@ -184,7 +228,7 @@
       </div>
       <div id="mapEditor" class="map-editor hidden">
         <div class="hint" style="margin-bottom:4px">一行一条，格式：<code>客户端模型名 = 渠道/模型名</code>；支持通配 <code>claude-* = workbuddy/glm-5.2</code>；以 # 开头为注释。</div>
-        <textarea id="mapText" class="input map-text" spellcheck="false" rows="6"></textarea>
+        <textarea id="mapText" class="map-text" spellcheck="false" rows="6"></textarea>
         <div class="hint" style="margin-top:5px">
           缺省建议（点击插入）：<span id="mapPresets"></span>
         </div>
@@ -198,7 +242,7 @@
   </div>
 </div>
 
-<!-- API Key 弹层 -->
+<!-- ===== API Key 弹层 ===== -->
 <div class="overlay hidden" id="apiKeyOverlay">
   <div class="modal">
     <div class="modal-title">修改 API-Key</div>
@@ -206,14 +250,14 @@
       <input id="keyInput" class="input grow" style="width:100%" spellcheck="false" placeholder="留空 = 不鉴权">
     </div>
     <div class="modal-actions">
-          <button class="btn small" id="btnKeyCancel">取消</button>
-          <button class="btn small" id="btnKeyGenerate">生成</button>
-          <button class="btn small primary" id="btnKeySave">保存</button>
-        </div>
+      <button class="btn small" id="btnKeyCancel">取消</button>
+      <button class="btn small" id="btnKeyGenerate">生成</button>
+      <button class="btn small primary" id="btnKeySave">保存</button>
+    </div>
   </div>
 </div>
 
-<!-- 帮助弹层 -->
+<!-- ===== 帮助弹层 ===== -->
 <div class="overlay hidden" id="helpOverlay">
   <div class="modal" style="max-width:540px">
     <div class="modal-title">配置说明</div>
@@ -238,16 +282,23 @@
   </div>
 </div>
 
-<!-- 关于弹层 -->
+<!-- ===== 关于弹层 ===== -->
 <div class="overlay hidden" id="aboutOverlay">
   <div class="modal" style="text-align:center">
-    <img class="logo" src="./logo64.png" alt="logo" style="width:64px;height:64px;margin-bottom:12px">
+    <img class="logo" src="./logo64.png" alt="W" style="width:64px;height:64px;margin-bottom:12px;border-radius:16px" onerror="this.style.display='none'">
     <div class="modal-title">wild-work</div>
     <div class="modal-body" style="color:var(--muted)">
-      <p>版本 <span id="aboutVer"></span></p>
+      <p>版本 <span id="aboutVer"></span> <span class="fpk-ver" id="aboutFpkVer"></span></p>
       <p>多渠道账号聚合工具</p>
       <p>基于 WorkBuddy + TraeWork + Qoder 上游</p>
       <p style="margin-top:8px;font-size:12px">仅供个人学习使用</p>
+      <div class="update-check">
+        <button class="btn small primary" id="btnCheckUpdate">检查更新</button>
+        <span id="updateStatus" class="update-status"></span>
+      </div>
+      <div id="updateDownload" class="hidden update-download">
+        <a id="updateLink" href="#" target="_blank" rel="noopener">📥 下载新版</a>
+      </div>
     </div>
     <div class="modal-actions" style="justify-content:center">
       <button class="btn small primary" id="btnAboutClose">关闭</button>

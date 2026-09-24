@@ -35,37 +35,43 @@ const callbackPageBase = `<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>wild-work 登录回调</title>
 <style>
-  :root { color-scheme: light; }
+  :root { color-scheme: dark; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%%; }
   body {
     display: flex; align-items: center; justify-content: center;
     font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-    background: linear-gradient(160deg, #f0f9ff 0%%, #e0f2fe 100%%);
+    background: #0a0e17;
+    background-image:
+      radial-gradient(ellipse at 30%% 40%%, rgba(59,130,246,.08) 0%%, transparent 50%%),
+      radial-gradient(ellipse at 70%% 60%%, rgba(139,92,246,.06) 0%%, transparent 50%%);
   }
   .card {
-    width: 360px; padding: 36px 32px 28px; text-align: center;
-    background: #fff; border-radius: 16px;
-    box-shadow: 0 10px 40px rgba(14, 116, 144, .14);
+    width: 380px; padding: 40px 32px 28px; text-align: center;
+    background: rgba(15,23,42,.85); backdrop-filter: blur(20px);
+    border: 1px solid rgba(148,163,184,.12);
+    border-radius: 20px;
+    box-shadow: 0 8px 32px rgba(0,0,0,.4);
   }
   .icon {
-    width: 64px; height: 64px; margin: 0 auto 18px; border-radius: 50%%;
+    width: 72px; height: 72px; margin: 0 auto 20px; border-radius: 50%%;
     display: flex; align-items: center; justify-content: center;
-    font-size: 34px; color: #fff;
+    font-size: 36px; color: #fff;
   }
-  .ok .icon { background: #0e7490; }
-  .err .icon { background: #dc2626; }
-  h1 { font-size: 20px; color: #0f172a; margin-bottom: 10px; font-weight: 600; }
-  p { font-size: 14px; color: #64748b; line-height: 1.6; margin-bottom: 22px; word-break: break-all; }
-  .msg { font-size: 13px; color: #475569; }
+  .ok .icon { background: linear-gradient(135deg,#3b82f6,#2563eb); box-shadow: 0 4px 16px rgba(59,130,246,.35); }
+  .err .icon { background: linear-gradient(135deg,#ef4444,#dc2626); box-shadow: 0 4px 16px rgba(239,68,68,.3); }
+  h1 { font-size: 22px; color: #f1f5f9; margin-bottom: 10px; font-weight: 700; letter-spacing: -.3px; }
+  p { font-size: 14px; color: #94a3b8; line-height: 1.6; margin-bottom: 24px; word-break: break-all; }
+  .msg { font-size: 13px; color: #64748b; }
   .close-btn {
-    display: inline-block; padding: 10px 36px; border: none; border-radius: 8px;
-    font-size: 14px; color: #fff; cursor: pointer; transition: opacity .15s;
+    display: inline-block; padding: 10px 40px; border: none; border-radius: 10px;
+    font-size: 14px; font-weight: 500; color: #fff; cursor: pointer; transition: all .15s;
   }
-  .ok .close-btn { background: #0e7490; }
-  .err .close-btn { background: #dc2626; }
-  .close-btn:hover { opacity: .88; }
-  .brand { margin-top: 18px; font-size: 12px; color: #94a3b8; }
+  .ok .close-btn { background: linear-gradient(135deg,#3b82f6,#2563eb); }
+  .err .close-btn { background: linear-gradient(135deg,#ef4444,#dc2626); }
+  .ok .close-btn:hover { background: linear-gradient(135deg,#60a5fa,#3b82f6); box-shadow: 0 4px 16px rgba(59,130,246,.3); }
+  .err .close-btn:hover { background: linear-gradient(135deg,#f87171,#ef4444); box-shadow: 0 4px 16px rgba(239,68,68,.3); }
+  .brand { margin-top: 20px; font-size: 12px; color: #475569; }
 </style>
 </head>
 <body>
@@ -80,7 +86,6 @@ const callbackPageBase = `<!doctype html>
 var autoClose = %s;
 function tryClose() { window.close(); }
 if (autoClose) { setTimeout(tryClose, %d); }
-// window.close 对非脚本打开的页面常被浏览器拦截：拦截时提示手动关闭
 setTimeout(function () {
   var b = document.querySelector('.close-btn');
   if (!window.closed && b) { b.textContent = '关闭此标签页'; }

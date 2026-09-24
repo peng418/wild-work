@@ -544,7 +544,21 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		rt.Pool.NoteSuccess(acct.UID)
 		h.stickySuccess(rt)
 		if peek.Stream {
-			_ = rt.Upstream.Stream(w, rc, clientModel)
+			// 上游常把错误包在 HTTP 200 的 SSE 信封里（千问办公/QoderCOM 都是这样），
+			// 此时 Stream 会在「一个字节都没写出」的情况下返回 error。以前这里写 `_ =` 丢弃它，
+			// 客户端只会收到 200 + 空 body（Go 补 Content-Length: 0），流式客户端（Studio、
+			// Claude Code、各家 SDK）于是既不回复也不报错地静默挂住。必须把错误交给客户端。
+			sp := &streamProbe{ResponseWriter: w}
+			serr := rt.Upstream.Stream(sp, rc, clientModel)
+			if serr != nil {
+				log.Printf("stream failed platform=%s uid=%s model=%s wrote=%t：%v",
+					rt.Kind, acct.UID, clientModel, sp.wrote, serr)
+				// 状态行还没发出去才能改写响应；已经写出内容就只能靠日志留痕（不补错误帧，
+				// 避免给已正常结束的流追加噪声）。
+				if !sp.wrote && !sp.sent {
+					writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", serr.Error())
+				}
+			}
 			return
 		}
 		resp, err := rt.Upstream.Aggregate(rc, clientModel)
@@ -692,6 +706,31 @@ var errTooLarge = fmt.Errorf("request body exceeds limit of %d bytes; please red
 
 func writeOpenAIError(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, map[string]any{"error": map[string]any{"message": msg, "type": "api_error", "code": code}})
+}
+
+// streamProbe 包住 ResponseWriter，记录流式过程是否已经写出 body / 状态行。
+// 用途：渠道 Stream 返回 error 时判断「还来不来得及改写成错误响应」。
+type streamProbe struct {
+	http.ResponseWriter
+	wrote bool // 已写出 body
+	sent  bool // 状态行已发出（WriteHeader 或 Flush）
+}
+
+func (s *streamProbe) WriteHeader(code int) {
+	s.sent = true
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *streamProbe) Write(p []byte) (int, error) {
+	s.wrote = true
+	return s.ResponseWriter.Write(p)
+}
+
+func (s *streamProbe) Flush() {
+	s.sent = true
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // transparentError 上游错误原文透传：status+body 原样写回，不包装。
