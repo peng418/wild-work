@@ -23,9 +23,15 @@ temp/
 
 # 系统
 .DS_Store
-Thumbs.dbgithub_token.txt
+Thumbs.db
+github_token.txt
 HANDOFF.md
 GO多平台发布备忘.md
 
 # 手工备份文件
 *.bak
+
+# 本地截图/审计脚本的依赖与清单（只在开发机上用，不入库）
+node_modules/
+package.json
+package-lock.json
